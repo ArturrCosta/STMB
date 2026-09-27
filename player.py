@@ -6,13 +6,13 @@ class Player(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
 
-        self.image = pygame.Surface((40, 40))
+        self.image = pygame.Surface((18, 24))
         self.image.fill((255, 255, 255))
 
         self.rect = self.image.get_rect()
         self.rect.center = (400, 300)
 
-        self.speed = 5
+        self.speed = 30
 
     def update(self):
         keys = pygame.key.get_pressed()
