@@ -12,7 +12,7 @@ class Player(pygame.sprite.Sprite):
         self.rect = self.image.get_rect()
         self.rect.center = (400, 300)
 
-        self.speed = 30
+        self.speed = 3
 
     def update(self):
         keys = pygame.key.get_pressed()

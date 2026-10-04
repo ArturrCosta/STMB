@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="80" height="60" tilewidth="32" tileheight="32" infinite="0" nextlayerid="8" nextobjectid="25">
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="80" height="60" tilewidth="32" tileheight="32" infinite="0" nextlayerid="8" nextobjectid="29">
  <tileset firstgid="1" source="tiles.tsx"/>
  <tileset firstgid="16" source="tiles do mapa.tsx"/>
  <tileset firstgid="641" source="casaA.tsx"/>
  <tileset firstgid="642" source="casaAA.tsx"/>
  <tileset firstgid="643" source="casaAAA.tsx"/>
  <tileset firstgid="644" source="casaB.tsx"/>
+ <tileset firstgid="645" source="casaBB.tsx"/>
+ <tileset firstgid="646" source="casaC.tsx"/>
+ <tileset firstgid="647" source="casaCC.tsx"/>
  <layer id="1" name="Ground" width="80" height="60">
   <data encoding="csv">
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -202,8 +205,11 @@
   <object id="14" gid="1073742465" x="1984" y="1600" width="576" height="256"/>
   <object id="17" gid="641" x="0" y="1216" width="576" height="256"/>
   <object id="19" gid="642" x="1856" y="1920" width="576" height="256" rotation="-90"/>
-  <object id="20" gid="643" x="1985" y="1216" width="576" height="256"/>
+  <object id="20" gid="643" x="1984" y="1216" width="576" height="256"/>
   <object id="24" gid="644" x="1984" y="1920" width="576" height="320"/>
+  <object id="25" gid="645" x="0" y="1920" width="576" height="320"/>
+  <object id="26" gid="646" x="1856" y="544" width="544" height="256" rotation="-90"/>
+  <object id="28" gid="647" x="1344" y="0" width="544" height="256" rotation="90"/>
  </objectgroup>
  <layer id="3" name="Buildings" width="80" height="60">
   <data encoding="csv">
