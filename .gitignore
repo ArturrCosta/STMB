@@ -1,4 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
-.vscode/
+logs/
+data/*.db
+data/*.db-journal

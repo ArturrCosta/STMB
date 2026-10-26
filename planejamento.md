@@ -314,3 +314,27 @@ Ao final da primeira etapa:
 - jogador se movimentando com WASD.
 
 Depois disso, o próximo objetivo será integrar a câmera e começar o mapa.
+
+## 10. Estado do protótipo atualizado
+
+### Implementado no código
+- [x] Janela redimensionável/maximizada e escala 16:9 sem deformar o jogo.
+- [x] Menu inicial e seleção de dificuldade.
+- [x] Movimento WASD/setas, câmera, limites do mapa e colisão básica.
+- [x] Interações provisórias para loja, barzinho, feira musical, casa de shows, casa do jogador e estação.
+- [x] Minigame de ritmo com três pistas, acertos, erros, pontuação e recompensa.
+- [x] Dinheiro, dívida, cobrança diária crescente e condição de derrota.
+- [x] Loja com estoque diário, roupas, Fusca e passagem de trem.
+- [x] Evento aleatório do cobrador com teste de reação.
+- [x] Duas etapas de progressão: cidade e palcos mais exigentes.
+- [x] Vitória por fuga de trem ou sobrevivência prolongada.
+- [x] Ranking SQLite persistente e registro de acontecimentos/erros em log.
+
+### Ainda precisa ser testado no computador do projeto
+- [ ] Executar `python main.py` e verificar o carregamento do mapa após a correção do tileset autocontido.
+- [ ] Conferir o alinhamento das casas rotacionadas e ajustar as coordenadas, se necessário.
+- [ ] Ajustar os marcadores de interação conforme os prédios finais forem posicionados.
+- [ ] Testar o fluxo completo: ganhar dinheiro, comprar roupas, acessar palcos, dormir, pagar a cobrança e vencer/perder.
+- [ ] Fazer balanceamento de preços, pagamentos, velocidade das notas e tempo do dia.
+
+Os marcadores, o jogador e a interface ainda são provisórios. Prioridade imediata: executar e testar o protótipo integrado antes de acrescentar novas funcionalidades.
