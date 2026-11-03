@@ -13,12 +13,12 @@ from tiled_map import TiledMap
 # Coordenadas em pixels do mapa (80 x 60 tiles de 32 px).
 # São marcadores provisórios e podem ser movidos quando os prédios finais forem feitos.
 ZONES = [
-    {"id": "shop", "name": "LOJA", "position": (640, 570), "color": (243, 190, 76)},
-    {"id": "bar", "name": "BARZINHO", "position": (900, 710), "color": (229, 119, 76)},
-    {"id": "fair", "name": "FEIRA MUSICAL", "position": (1280, 1030), "color": (99, 196, 131)},
-    {"id": "concert", "name": "CASA DE SHOWS", "position": (1730, 710), "color": (181, 132, 230)},
-    {"id": "home", "name": "SUA CASA", "position": (300, 1150), "color": (104, 185, 224)},
-    {"id": "station", "name": "ESTAÇÃO", "position": (1280, 1540), "color": (226, 217, 119)},
+    {"id": "shop", "name": "LOJA", "position": (1300, 1500), "color": (243, 190, 76)},
+    {"id": "bar", "name": "BARZINHO", "position": (500, 1300), "color": (229, 119, 76)},
+    {"id": "fair", "name": "FEIRA MUSICAL", "position": (1950, 860), "color": (99, 196, 131)},
+    {"id": "concert", "name": "CASA DE SHOWS", "position": (500, 550), "color": (181, 132, 230)},
+    {"id": "home", "name": "SUA CASA", "position": (650, 1800), "color": (104, 185, 224)},
+    {"id": "station", "name": "ESTAÇÃO", "position": (1950, 400), "color": (226, 217, 119)},
 ]
 
 ITEMS = {

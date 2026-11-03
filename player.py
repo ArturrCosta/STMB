@@ -15,7 +15,7 @@ class Player(pygame.sprite.Sprite):
         self.rect.center = (1280, 900)
         self.position = pygame.Vector2(self.rect.topleft)
 
-        self.base_speed = 190  # pixels por segundo
+        self.base_speed = 300  # pixels por segundo
         self.has_car = False
         self.tired = False
 
