@@ -1,12 +1,14 @@
 import logging
 import math
 import random
+from pathlib import Path
 
 import pygame
 
 from camera import Camera
 from player import Player
 from ranking import Ranking
+from rhythm import RhythmSession, load_beatmap, load_settings, reward_for, save_settings
 from tiled_map import TiledMap
 
 
@@ -32,9 +34,9 @@ ITEMS = {
 
 CLOTHING_KEYS = ["chapeu", "sapatos", "calca", "blazer"]
 DIFFICULTIES = {
-    "Fácil": {"speed": 175, "spawn": 0.78, "notes": 7, "multiplier": 0.85},
-    "Normal": {"speed": 215, "spawn": 0.68, "notes": 9, "multiplier": 1.0},
-    "Difícil": {"speed": 255, "spawn": 0.58, "notes": 12, "multiplier": 1.25},
+    "Fácil": {"level": 0, "multiplier": 0.85},
+    "Normal": {"level": 1, "multiplier": 1.0},
+    "Difícil": {"level": 2, "multiplier": 1.25},
 }
 VENUES = {
     "bar": {"name": "Barzinho", "reward": 350, "level": 0, "required": 0},
@@ -92,20 +94,14 @@ class Game:
         self.player_name = ""
         self.rank_return_state = "menu"
 
-        # Dados temporários do minigame de ritmo.
+        # Estado temporário das apresentações.
         self.active_venue = None
-        self.rhythm_notes = []
-        self.rhythm_spawned = 0
-        self.rhythm_total = 0
-        self.rhythm_hits = 0
-        self.rhythm_perfects = 0
-        self.rhythm_misses = 0
-        self.rhythm_spawn_timer = 0.0
-        self.rhythm_note_speed = 210
-        self.rhythm_spawn_interval = 0.7
+        self.rhythm = None
+        self.rhythm_settings = load_settings()
+        self.rhythm_setting_index = 0
+        self.rhythm_result = None
         self.rhythm_target_y = 515
-        self.rhythm_hit_window = 42
-        self.rhythm_lanes = [440, 640, 840]
+        self.rhythm_lanes = [490, 590, 690, 790]
         self.collector_timer = 0.0
         self.collector_reaction_delay = 0.0
 
@@ -115,6 +111,9 @@ class Game:
     # Eventos e atualização
     # ------------------------------------------------------------------
     def handle_event(self, event):
+        if self.state == "rhythm" and event.type in (pygame.KEYDOWN, pygame.KEYUP):
+            self._handle_rhythm_key(event)
+            return
         if event.type != pygame.KEYDOWN:
             return
 
@@ -131,8 +130,11 @@ class Game:
                 self._advance_day(slept=True)
             elif event.key in (pygame.K_ESCAPE, pygame.K_e):
                 self.state = "playing"
-        elif self.state == "rhythm":
-            self._handle_rhythm_key(event.key)
+        elif self.state == "rhythm_setup":
+            self._handle_rhythm_setup(event.key)
+        elif self.state == "rhythm_result":
+            if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE):
+                self._leave_rhythm_result()
         elif self.state == "collector":
             self._handle_collector_key(event.key)
         elif self.state == "paused":
@@ -235,6 +237,8 @@ class Game:
         self.end_reason = ""
         self.result_saved = False
         self.active_venue = None
+        self.rhythm = None
+        self.rhythm_result = None
         self._refresh_shop_stock()
         self.camera.update(self.player)
 
@@ -284,7 +288,9 @@ class Game:
                 return
             if zone_id in ("fair", "concert"):
                 self.phase = 2
-            self._start_rhythm(zone_id)
+            self.active_venue = zone_id
+            self.rhythm_setting_index = 0
+            self.state = "rhythm_setup"
         elif zone_id == "home":
             self.state = "sleep_confirm"
         elif zone_id == "station":
@@ -380,104 +386,108 @@ class Game:
     # ------------------------------------------------------------------
     # Minigame de ritmo
     # ------------------------------------------------------------------
-    def _start_rhythm(self, venue_id):
-        self.active_venue = venue_id
-        venue = VENUES[venue_id]
-        difficulty = DIFFICULTIES[self.difficulty]
-
-        # A dificuldade do local soma-se à dificuldade escolhida no menu.
-        venue_factor = 1 + venue["level"] * 0.18
-        self.rhythm_total = max(5, round(difficulty["notes"] * venue_factor))
-        self.rhythm_note_speed = difficulty["speed"] * venue_factor
-        self.rhythm_spawn_interval = difficulty["spawn"] / venue_factor
-        self.rhythm_notes = []
-        self.rhythm_spawned = 0
-        self.rhythm_hits = 0
-        self.rhythm_perfects = 0
-        self.rhythm_misses = 0
-        self.rhythm_spawn_timer = 0.15
-        self.state = "rhythm"
-        logging.info("Começou apresentação em %s", venue["name"])
-
-    def _update_rhythm(self, dt):
-        if self.rhythm_spawned < self.rhythm_total:
-            self.rhythm_spawn_timer += dt
-            if self.rhythm_spawn_timer >= self.rhythm_spawn_interval:
-                self.rhythm_spawn_timer -= self.rhythm_spawn_interval
-                self.rhythm_notes.append(
-                    {"lane": random.randrange(3), "y": 155.0, "hit": False}
-                )
-                self.rhythm_spawned += 1
-
-        for note in self.rhythm_notes[:]:
-            note["y"] += self.rhythm_note_speed * dt
-            if note["y"] > self.rhythm_target_y + self.rhythm_hit_window:
-                self.rhythm_notes.remove(note)
-                self.rhythm_misses += 1
-
-        if self.rhythm_spawned >= self.rhythm_total and not self.rhythm_notes:
-            self._finish_rhythm()
-
-    def _handle_rhythm_key(self, key):
-        key_to_lane = {pygame.K_a: 0, pygame.K_s: 1, pygame.K_d: 2}
-        if key == pygame.K_ESCAPE:
-            self._set_toast("Apresentação abandonada: sem pagamento.")
+    def _handle_rhythm_setup(self, key):
+        names = ("approach", "volume", "audio_offset", "input_offset")
+        if key in (pygame.K_UP, pygame.K_w):
+            self.rhythm_setting_index = (self.rhythm_setting_index - 1) % len(names)
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.rhythm_setting_index = (self.rhythm_setting_index + 1) % len(names)
+        elif key in (pygame.K_LEFT, pygame.K_RIGHT):
+            name = names[self.rhythm_setting_index]
+            direction = -1 if key == pygame.K_LEFT else 1
+            step = 0.2 if name == "approach" else 10
+            limits = {"approach": (1.0, 3.0), "volume": (0, 100),
+                      "audio_offset": (-250, 250), "input_offset": (-250, 250)}
+            low, high = limits[name]
+            self.rhythm_settings[name] = max(low, min(high, round(self.rhythm_settings[name] + direction * step, 2)))
+            try:
+                save_settings(self.rhythm_settings)
+            except OSError as error:
+                logging.warning("Não foi possível salvar configurações de ritmo: %s", error)
+        elif key in (pygame.K_RETURN, pygame.K_SPACE):
+            self._start_rhythm(self.active_venue)
+        elif key == pygame.K_ESCAPE:
             self.active_venue = None
             self.state = "playing"
+
+    def _start_rhythm(self, venue_id):
+        self.rhythm_result = None
+        level = DIFFICULTIES[self.difficulty]["level"] + VENUES[venue_id]["level"]
+        songs = sorted(Path("assets/music").glob("*.json"))
+        try:
+            if not songs:
+                raise FileNotFoundError("Nenhum beatmap em assets/music")
+            beatmap = load_beatmap(songs[self.songs_performed % len(songs)], level)
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            pygame.mixer.music.load(str(beatmap["audio"]))
+            pygame.mixer.music.set_volume(self.rhythm_settings["volume"] / 100)
+            self.rhythm = RhythmSession(beatmap, self.rhythm_settings.copy())
+            pygame.mixer.music.play()
+            self.rhythm.start()
+        except (OSError, ValueError, KeyError, TypeError, pygame.error) as error:
+            logging.error("Falha ao iniciar apresentação: %s", error)
+            if pygame.mixer.get_init():
+                pygame.mixer.music.stop()
+            self.rhythm = None
+            self.active_venue = None
+            self.state = "playing"
+            self._set_toast("Não foi possível carregar a música ou o beatmap. Sem pagamento.")
             return
+        self.state = "rhythm"
+        logging.info("Começou apresentação em %s, nível %s", VENUES[venue_id]["name"], level)
 
-        if key not in key_to_lane:
+    def _update_rhythm(self, dt):
+        self.rhythm.update()
+        if not pygame.mixer.music.get_busy() and self.rhythm.song_time() < self.rhythm.map["duration"] - 1.0:
+            self._abandon_rhythm("Reprodução interrompida. Sem pagamento.")
+        elif self.rhythm.finished:
+            self._finish_rhythm()
+
+    def _handle_rhythm_key(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self._abandon_rhythm("Apresentação abandonada: sem pagamento.")
             return
+        key_to_lane = {pygame.K_d: 0, pygame.K_f: 1, pygame.K_j: 2, pygame.K_k: 3}
+        lane = key_to_lane.get(event.key)
+        if lane is not None:
+            if event.type == pygame.KEYDOWN:
+                self.rhythm.key_down(lane)
+            else:
+                self.rhythm.key_up(lane)
 
-        lane = key_to_lane[key]
-        candidates = [
-            note for note in self.rhythm_notes
-            if note["lane"] == lane
-            and abs(note["y"] - self.rhythm_target_y) <= self.rhythm_hit_window
-        ]
-        if not candidates:
-            return
-
-        note = min(candidates, key=lambda candidate: abs(candidate["y"] - self.rhythm_target_y))
-        distance = abs(note["y"] - self.rhythm_target_y)
-        self.rhythm_notes.remove(note)
-        self.rhythm_hits += 1
-        self.score += 100
-        if distance <= 15:
-            self.rhythm_perfects += 1
-            self.score += 50
-
-    def _finish_rhythm(self):
-        venue_id = self.active_venue
-        venue = VENUES[venue_id]
-        accuracy = self.rhythm_hits / max(1, self.rhythm_total)
-        perfect_bonus = self.rhythm_perfects * 20
-        reward = 0
-
-        if self.rhythm_hits == self.rhythm_total:
-            reward = venue["reward"] + perfect_bonus
-            message = f"Show perfeito! Recebeu R$ {reward} (bônus de precisão incluído)."
-        elif accuracy >= 0.65:
-            reward = venue["reward"] // 2
-            message = f"Boa apresentação! Recebeu R$ {reward}. Acerte todas para ganhar o total."
-        else:
-            message = "Apresentação ruim: sem pagamento."
-            lost_item = self._lose_random_item()
-            if lost_item:
-                message += f" Você perdeu {ITEMS[lost_item]['name']}!"
-
-        self.money += reward
-        self.score += reward // 10
-        self.songs_performed += 1
-        logging.info(
-            "Apresentação %s: hits=%s/%s; perfeitas=%s; pagamento=%s",
-            venue["name"], self.rhythm_hits, self.rhythm_total,
-            self.rhythm_perfects, reward,
-        )
+    def _abandon_rhythm(self, message):
+        if pygame.mixer.get_init():
+            pygame.mixer.music.stop()
+        self.rhythm = None
         self.active_venue = None
         self.state = "playing"
-        self._set_toast(message, seconds=4.5)
+        self._set_toast(message)
 
+    def _finish_rhythm(self):
+        pygame.mixer.music.stop()
+        venue = VENUES[self.active_venue]
+        accuracy = self.rhythm.accuracy
+        reward = reward_for(accuracy, venue["reward"], DIFFICULTIES[self.difficulty]["multiplier"])
+        lost_item = self._lose_random_item() if accuracy < 0.65 else None
+        self.money += reward
+        self.score += self.rhythm.score // 10
+        self.score += reward // 10
+        self.songs_performed += 1
+        self.rhythm_result = {"venue": venue["name"], "accuracy": accuracy,
+                              "score": self.rhythm.score, "combo": self.rhythm.max_combo,
+                              "counts": self.rhythm.counts.copy(), "reward": reward,
+                              "lost_item": ITEMS[lost_item]["name"] if lost_item else None}
+        logging.info(
+            "Apresentação %s: precisão=%.2f%%; pontos=%s; pagamento=%s",
+            venue["name"], accuracy * 100, self.rhythm.score, reward,
+        )
+        self.active_venue = None
+        self.rhythm = None
+        self.state = "rhythm_result"
+
+    def _leave_rhythm_result(self):
+        self.state = "playing"
         # O cobrador aparece em aproximadamente 30% das apresentações.
         if random.random() < 0.30:
             self.state = "collector"
@@ -578,6 +588,10 @@ class Game:
             self._draw_sleep_confirm(screen)
         elif self.state == "rhythm":
             self._draw_rhythm(screen)
+        elif self.state == "rhythm_setup":
+            self._draw_rhythm_setup(screen)
+        elif self.state == "rhythm_result":
+            self._draw_rhythm_result(screen)
         elif self.state == "collector":
             self._draw_hud(screen)
             self._draw_collector(screen)
@@ -701,32 +715,104 @@ class Game:
         self._text(screen, "A cobrança aumenta 50% a cada dia.", self.font, (255, 174, 139), center=(640, 375))
         self._text(screen, "ENTER confirmar  |  ESC cancelar", self.font, (255, 255, 255), center=(640, 445))
 
-    def _draw_rhythm(self, screen):
-        self._draw_overlay(screen, alpha=205)
+    def _draw_rhythm_setup(self, screen):
+        self._draw_overlay(screen, alpha=220)
+        self._panel(screen, pygame.Rect(300, 120, 680, 490))
         venue = VENUES[self.active_venue]
-        self._text(screen, venue["name"].upper(), self.font_title, (247, 203, 107), center=(640, 70))
-        self._text(screen, "Acerte A, S ou D quando a nota chegar à linha!", self.font, (238, 242, 244), center=(640, 120))
+        level = DIFFICULTIES[self.difficulty]["level"] + venue["level"] + 1
+        self._text(screen, f"{venue['name'].upper()}  |  NÍVEL {level}/5", self.font_large,
+                   (247, 203, 107), center=(640, 175))
+        self._text(screen, "AJUSTES MUSICAIS", self.font, (236, 240, 242), center=(640, 225))
+        s = self.rhythm_settings
+        rows = (f"Velocidade visual: {s['approach']:.1f} s",
+                f"Volume: {s['volume']}%",
+                f"Offset de áudio: {s['audio_offset']:+d} ms",
+                f"Offset de entrada: {s['input_offset']:+d} ms")
+        for index, row in enumerate(rows):
+            color = (247, 203, 107) if index == self.rhythm_setting_index else (225, 232, 236)
+            self._text(screen, (">  " if index == self.rhythm_setting_index else "   ") + row,
+                       self.font, color, topleft=(380, 280 + index * 50))
+        self._text(screen, "↑/↓ selecionar   ←/→ ajustar", self.font_small,
+                   (190, 202, 210), center=(640, 515))
+        self._text(screen, "ENTER tocar   |   ESC cancelar", self.font_small,
+                   (190, 202, 210), center=(640, 550))
 
-        top = 150
-        bottom = 570
-        for lane_index, lane_x in enumerate(self.rhythm_lanes):
-            track = pygame.Rect(lane_x - 70, top, 140, bottom - top)
-            pygame.draw.rect(screen, (26, 34, 41), track, border_radius=12)
-            pygame.draw.rect(screen, (91, 108, 118), track, 2, border_radius=12)
-            pygame.draw.line(screen, (247, 203, 107), (lane_x - 65, self.rhythm_target_y), (lane_x + 65, self.rhythm_target_y), 4)
-            key_label = self.font_large.render("ASD"[lane_index], True, (255, 255, 255))
-            key_rect = key_label.get_rect(center=(lane_x, 600))
-            screen.blit(key_label, key_rect)
-
-        lane_colors = [(100, 198, 240), (249, 191, 88), (203, 133, 235)]
-        for note in self.rhythm_notes:
+    def _draw_rhythm(self, screen):
+        self._draw_overlay(screen, alpha=228)
+        session = self.rhythm
+        now = session.song_time()
+        duration = session.map["duration"]
+        self._text(screen, session.map["title"], self.font_large, (247, 203, 107), center=(640, 55))
+        self._text(screen, VENUES[self.active_venue]["name"], self.font_small,
+                   (200, 215, 220), center=(640, 91))
+        self._text(screen, f"Pontos  {session.score}", self.font, (240, 244, 246), topleft=(80, 245))
+        self._text(screen, f"Precisão  {session.accuracy * 100:.2f}%", self.font,
+                   (240, 244, 246), topleft=(80, 285))
+        self._text(screen, f"Combo  {session.combo}", self.font_large,
+                   (247, 203, 107), topleft=(80, 345))
+        if session.last_judgment and now - session.last_judgment_at < 0.7:
+            self._text(screen, session.last_judgment.upper(), self.font_large,
+                       (255, 224, 143), center=(1010, 325))
+        top, target = 130, self.rhythm_target_y
+        colors = ((112, 203, 235), (250, 195, 104), (187, 151, 231), (124, 217, 169))
+        for lane, x in enumerate(self.rhythm_lanes):
+            track = pygame.Rect(x - 48, top, 96, 450)
+            pygame.draw.rect(screen, (38, 50, 58) if lane in session.pressed else (25, 34, 41), track)
+            pygame.draw.rect(screen, (66, 82, 91), track, 1)
+            pygame.draw.circle(screen, colors[lane] if lane in session.pressed else (91, 109, 119),
+                               (x, target), 32, 4)
+            self._text(screen, "DFJK"[lane], self.font_large, (245, 247, 248), center=(x, 607))
+        hit_age = now - session.last_judgment_at
+        if session.last_judgment != "Miss" and 0 <= hit_age < 0.32:
+            radius = 34 + int(hit_age * 55)
+            pygame.draw.circle(screen, colors[session.last_lane],
+                               (self.rhythm_lanes[session.last_lane], target), radius, 2)
+        speed = (target - top) / session.settings["approach"]
+        clip = screen.get_clip()
+        screen.set_clip(pygame.Rect(440, top, 400, target - top + 33))
+        for note in session.map["notes"]:
+            if note["head"] is not None and (not note["duration"] or note["tail"] is not None):
+                continue
             x = self.rhythm_lanes[note["lane"]]
-            rect = pygame.Rect(x - 48, int(note["y"]) - 15, 96, 30)
-            pygame.draw.rect(screen, lane_colors[note["lane"]], rect, border_radius=8)
-            pygame.draw.rect(screen, (255, 255, 255), rect, 2, border_radius=8)
+            y = target - (note["time"] - now) * speed
+            if note["duration"]:
+                end_y = target - (note["time"] + note["duration"] - now) * speed
+                if note["tail"] is None and end_y < target + 35 and y > top - 35:
+                    body = pygame.Rect(x - 12, int(end_y), 24, max(1, int(y - end_y)))
+                    pygame.draw.rect(screen, colors[note["lane"]], body, border_radius=10)
+            if note["head"] is None and top - 35 <= y <= target + 35:
+                pygame.draw.circle(screen, colors[note["lane"]], (x, int(y)), 27)
+                pygame.draw.circle(screen, (245, 248, 249), (x, int(y)), 27, 2)
+        screen.set_clip(clip)
+        pygame.draw.rect(screen, (54, 66, 74), (340, 654, 600, 8), border_radius=4)
+        pygame.draw.rect(screen, (247, 203, 107),
+                         (340, 654, int(600 * min(1, max(0, now / duration))), 8), border_radius=4)
+        self._text(screen, f"{max(0, now):.0f}/{duration:.0f} s  |  ESC abandona",
+                   self.font_small, (190, 202, 210), center=(640, 689))
 
-        self._text(screen, f"Acertos: {self.rhythm_hits}   Perfeitos: {self.rhythm_perfects}   Erros: {self.rhythm_misses}", self.font_small, (238, 242, 244), center=(640, 660))
-        self._text(screen, f"Notas: {self.rhythm_spawned}/{self.rhythm_total}   |   ESC abandona", self.font_small, (190, 202, 210), center=(640, 690))
+    def _draw_rhythm_result(self, screen):
+        self._draw_overlay(screen, alpha=225)
+        self._panel(screen, pygame.Rect(280, 90, 720, 555))
+        result = self.rhythm_result
+        self._text(screen, "RESULTADO DA APRESENTAÇÃO", self.font_large,
+                   (247, 203, 107), center=(640, 150))
+        self._text(screen, result["venue"], self.font, (230, 237, 240), center=(640, 198))
+        self._text(screen, f"Precisão  {result['accuracy'] * 100:.2f}%", self.font_large,
+                   (240, 244, 246), center=(640, 265))
+        self._text(screen, f"Pontos  {result['score']}    |    Maior combo  {result['combo']}",
+                   self.font, (240, 244, 246), center=(640, 320))
+        counts = result["counts"]
+        self._text(screen, "Perfect  {Perfect}   Great  {Great}   Good  {Good}".format(**counts),
+                   self.font_small, (200, 215, 220), center=(640, 382))
+        self._text(screen, "OK  {OK}   Meh  {Meh}   Miss  {Miss}".format(**counts),
+                   self.font_small, (200, 215, 220), center=(640, 416))
+        self._text(screen, f"Recebeu R$ {result['reward']}", self.font_large,
+                   (124, 217, 169), center=(640, 485))
+        if result["lost_item"]:
+            self._text(screen, f"Apresentação ruim: perdeu {result['lost_item']}.",
+                       self.font_small, (255, 174, 139), center=(640, 530))
+        self._text(screen, "ENTER continuar", self.font_small,
+                   (190, 202, 210), center=(640, 594))
 
     def _draw_collector(self, screen):
         self._draw_overlay(screen, alpha=212)
