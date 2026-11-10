@@ -6,6 +6,7 @@ from pathlib import Path
 import pygame
 
 from camera import Camera
+from npc import NPC, Agiota
 from player import Player
 from ranking import Ranking
 from rhythm import RhythmSession, load_beatmap, load_settings, reward_for, save_settings
@@ -33,11 +34,28 @@ ITEMS = {
 }
 
 CLOTHING_KEYS = ["chapeu", "sapatos", "calca", "blazer"]
+# "level"/"multiplier" afetam o minigame de ritmo (dificuldade do beatmap e
+# recompensa). As demais chaves afetam o resto do jogo, conforme pedido no
+# enunciado: velocidade (player_speed_mult, agiota_speed), quantidade de
+# obstáculos (npc_count) e tempo limite (chase_window, na fuga do agiota).
 DIFFICULTIES = {
-    "Fácil": {"level": 0, "multiplier": 0.85},
-    "Normal": {"level": 1, "multiplier": 1.0},
-    "Difícil": {"level": 2, "multiplier": 1.25},
+    "Fácil": {
+        "level": 0, "multiplier": 0.85,
+        "player_speed_mult": 1.05, "npc_count": 6,
+        "agiota_speed": 150, "chase_window": 26.0,
+    },
+    "Normal": {
+        "level": 1, "multiplier": 1.0,
+        "player_speed_mult": 1.0, "npc_count": 9,
+        "agiota_speed": 185, "chase_window": 20.0,
+    },
+    "Difícil": {
+        "level": 2, "multiplier": 1.25,
+        "player_speed_mult": 0.97, "npc_count": 13,
+        "agiota_speed": 215, "chase_window": 15.0,
+    },
 }
+MAX_MISSED_PAYMENTS = 3  # cobranças perdidas toleradas antes da derrota definitiva
 VENUES = {
     "bar": {"name": "Barzinho", "reward": 350, "level": 0, "required": 0},
     "fair": {"name": "Feira musical", "reward": 650, "level": 1, "required": 1},
@@ -49,8 +67,12 @@ class Game:
     """Controla os estados, regras, interface e progressão do jogo."""
 
     def __init__(self):
-        self.tiled_map = TiledMap("assets/maps/cidade.tmx")
-        self.player = Player()
+        try:
+            self.tiled_map = TiledMap("assets/maps/cidade.tmx")
+            self.player = Player()
+        except (OSError, ValueError, pygame.error) as error:
+            logging.error("Falha ao carregar assets do jogo (mapa ou sprite do jogador): %s", error)
+            raise
         self.player.reset_position((1280, 900))
         self.camera = Camera(
             1280,
@@ -105,6 +127,14 @@ class Game:
         self.collector_timer = 0.0
         self.collector_reaction_delay = 0.0
 
+        # NPCs que caminham pela cidade e o agiota que persegue o jogador
+        # quando uma cobrança não é paga.
+        self.npcs = []
+        self.agiota = None
+        self.missed_payments = 0
+        self.chase_timer = 0.0
+        self.chase_window = 0.0
+
         self._refresh_shop_stock()
 
     # ------------------------------------------------------------------
@@ -153,20 +183,22 @@ class Game:
             self.toast_timer = max(0, self.toast_timer - dt)
 
         # O tempo avança enquanto o jogador está no mundo ou em uma atividade.
-        if self.state in ("playing", "shop", "rhythm", "collector"):
+        if self.state in ("playing", "shop", "rhythm", "collector", "chase"):
             self.clock_minutes += dt * 6
-            # Se o relógio chegar às 03:00 durante uma música/QTE, deixa a
-            # atividade terminar e só então inicia o próximo dia.
-            if self.clock_minutes >= 27 * 60 and self.state not in ("rhythm", "collector"):
+            # Se o relógio chegar às 03:00 durante uma música/QTE/perseguição,
+            # deixa a atividade terminar e só então inicia o próximo dia.
+            if self.clock_minutes >= 27 * 60 and self.state not in ("rhythm", "collector", "chase"):
                 self._advance_day(slept=False, forced=True)
 
         if self.state == "playing":
+            self._update_npcs(dt)
             on_grass = self.tiled_map.is_grass_at(self.player.rect.center)
             self.player.has_car = "fusca" in self.inventory
             self.player.tired = self.tired_day
+            obstacles = self.tiled_map.solid_rects + self._npc_obstacles()
             self.player.update(
                 dt,
-                self.tiled_map.solid_rects,
+                obstacles,
                 self.tiled_map.width,
                 self.tiled_map.height,
                 on_grass=on_grass,
@@ -180,6 +212,9 @@ class Game:
             self.collector_timer -= dt
             if self.collector_timer <= 0:
                 self._resolve_collector(success=False)
+
+        elif self.state == "chase":
+            self._update_chase(dt)
 
     # ------------------------------------------------------------------
     # Menus
@@ -223,6 +258,7 @@ class Game:
     def _start_new_game(self):
         self.player = Player()
         self.player.reset_position((1280, 900))
+        self.player.base_speed = round(300 * DIFFICULTIES[self.difficulty]["player_speed_mult"])
         self.inventory = []
         self.money = 500
         self.debt = 1000
@@ -239,6 +275,11 @@ class Game:
         self.active_venue = None
         self.rhythm = None
         self.rhythm_result = None
+        self.missed_payments = 0
+        self.agiota = None
+        self.chase_timer = 0.0
+        self.chase_window = 0.0
+        self._spawn_npcs()
         self._refresh_shop_stock()
         self.camera.update(self.player)
 
@@ -248,6 +289,104 @@ class Game:
         logging.info("Nova partida. Dificuldade=%s; cobrança inicial paga=%s", self.difficulty, self.daily_payment)
         self.state = "playing"
         self._set_toast(f"Dia 1: cobrança de R$ {self.daily_payment} paga. Vá trabalhar!")
+
+    # ------------------------------------------------------------------
+    # NPCs e agiota
+    # ------------------------------------------------------------------
+    def _random_walkable_point(self, reference=None, min_distance=0):
+        """Sorteia um ponto do mapa livre de obstáculos (rejection sampling).
+
+        Se `reference`/`min_distance` forem informados, evita pontos perto
+        demais de `reference` (usado para não gerar o agiota em cima do
+        jogador).
+        """
+        probe = pygame.Rect(0, 0, 18, 14)
+        for _ in range(50):
+            x = random.uniform(40, self.tiled_map.width - 40)
+            y = random.uniform(40, self.tiled_map.height - 40)
+            if reference is not None and math.dist((x, y), reference) < min_distance:
+                continue
+            probe.center = (round(x), round(y))
+            if not any(probe.colliderect(wall) for wall in self.tiled_map.solid_rects):
+                return (x, y)
+        return tuple(reference) if reference is not None else tuple(self.player.rect.center)
+
+    def _spawn_npcs(self):
+        """Cria os moradores que caminham pela cidade; a quantidade varia com a dificuldade."""
+        palette = [
+            (214, 197, 150), (176, 196, 214), (196, 176, 214),
+            (176, 214, 186), (214, 176, 176), (214, 214, 150),
+        ]
+        count = DIFFICULTIES[self.difficulty]["npc_count"]
+        self.npcs = []
+        for index in range(count):
+            point = self._random_walkable_point()
+            color = palette[index % len(palette)]
+            self.npcs.append(NPC(point, speed=random.uniform(55, 85), color=color))
+
+    def _update_npcs(self, dt):
+        for npc in self.npcs:
+            npc.update(dt, self.tiled_map.solid_rects, self.tiled_map.width, self.tiled_map.height)
+
+    def _npc_obstacles(self):
+        """Hitboxes dos NPCs, para somar aos prédios na checagem de colisão."""
+        return [npc.hitbox for npc in self.npcs]
+
+    def _start_chase(self):
+        """Substitui a derrota instantânea: o agiota persegue o jogador pela cidade."""
+        settings = DIFFICULTIES[self.difficulty]
+        self.chase_window = settings["chase_window"]
+        self.chase_timer = self.chase_window
+        spawn = self._random_walkable_point(reference=self.player.rect.center, min_distance=260)
+        self.agiota = Agiota(spawn, speed=settings["agiota_speed"])
+        self.state = "chase"
+        self._set_toast(
+            f"Não deu pra pagar a cobrança de hoje! Fuja do agiota por {int(self.chase_window)}s.",
+            seconds=4.5,
+        )
+        logging.info(
+            "Perseguição do agiota iniciada no dia %s (cobrança perdida nº %s)",
+            self.day, self.missed_payments,
+        )
+
+    def _update_chase(self, dt):
+        self._update_npcs(dt)
+
+        obstacles = self.tiled_map.solid_rects + self._npc_obstacles()
+        on_grass = self.tiled_map.is_grass_at(self.player.rect.center)
+        self.player.has_car = "fusca" in self.inventory
+        self.player.tired = self.tired_day
+        self.player.update(dt, obstacles, self.tiled_map.width, self.tiled_map.height, on_grass=on_grass)
+        self.camera.update(self.player)
+
+        self.agiota.update(dt, obstacles, self.tiled_map.width, self.tiled_map.height, self.player.rect.center)
+
+        if self.player.hitbox.colliderect(self.agiota.hitbox):
+            self._resolve_chase(caught=True)
+            return
+
+        self.chase_timer -= dt
+        if self.chase_timer <= 0:
+            self._resolve_chase(caught=False)
+
+    def _resolve_chase(self, caught):
+        if caught:
+            lost_money = self.money // 2
+            self.money -= lost_money
+            lost_item = self._lose_random_item()
+            self.player.stun(2.5)
+            message = f"O agiota te alcançou: perdeu R$ {lost_money}."
+            if lost_item:
+                message += f" Também perdeu {ITEMS[lost_item]['name']}."
+            message += " Você ficou atordoado por alguns segundos."
+            self._set_toast(message, seconds=5)
+            logging.info("Agiota alcançou o jogador no dia %s; perdeu R$ %s", self.day, lost_money)
+        else:
+            self._set_toast("Você escapou do agiota por hoje! Mas a dívida continua pendente.", seconds=4)
+            logging.info("Jogador escapou do agiota no dia %s", self.day)
+
+        self.agiota = None
+        self.state = "playing"
 
     # ------------------------------------------------------------------
     # Mundo e interações
@@ -353,10 +492,19 @@ class Game:
         self.player.tired = self.tired_day
 
         if self.money < self.daily_payment:
-            self._finish_game(
-                "derrota",
-                f"Não conseguiu pagar a cobrança de R$ {self.daily_payment} no dia {self.day}.",
+            self.missed_payments += 1
+            logging.warning(
+                "Cobrança de R$ %s não paga no dia %s (cobrança perdida nº %s)",
+                self.daily_payment, self.day, self.missed_payments,
             )
+            if self.missed_payments > MAX_MISSED_PAYMENTS:
+                self._finish_game(
+                    "derrota",
+                    f"O agiota perdeu a paciência: {self.missed_payments} cobranças seguidas "
+                    f"sem pagamento, até o dia {self.day}.",
+                )
+                return
+            self._start_chase()
             return
 
         self.money -= self.daily_payment
@@ -543,15 +691,18 @@ class Game:
 
     def _handle_name_entry(self, event):
         if event.key == pygame.K_RETURN:
-            self.ranking.save(
+            saved = self.ranking.save(
                 self.player_name or "Jogador",
                 self.score,
                 self.day,
                 self.difficulty,
                 self.end_result or "fim",
             )
-            logging.info("Pontuação salva no ranking")
-            self.result_saved = True
+            if saved:
+                logging.info("Pontuação salva no ranking")
+            else:
+                self._set_toast("Não foi possível salvar no ranking (erro no banco de dados).", seconds=4)
+            self.result_saved = saved
             self.rank_return_state = "menu"
             self.state = "ranking"
         elif event.key == pygame.K_ESCAPE:
@@ -571,7 +722,10 @@ class Game:
         self.camera.update(self.player)
         self.tiled_map.draw(screen, self.camera)
         self._draw_zones(screen)
+        self._draw_npcs(screen)
         screen.blit(self.player.image, self.camera.apply(self.player.rect))
+        if self.agiota is not None:
+            self.agiota.draw(screen, self.camera)
 
         if self.state == "menu":
             self._draw_menu(screen)
@@ -595,6 +749,9 @@ class Game:
         elif self.state == "collector":
             self._draw_hud(screen)
             self._draw_collector(screen)
+        elif self.state == "chase":
+            self._draw_hud(screen)
+            self._draw_chase(screen)
         elif self.state == "paused":
             self._draw_hud(screen)
             self._draw_paused(screen)
@@ -603,7 +760,7 @@ class Game:
         elif self.state == "end_name":
             self._draw_end_name(screen)
 
-        if self.toast_timer > 0 and self.state in ("playing", "shop", "sleep_confirm"):
+        if self.toast_timer > 0 and self.state in ("playing", "shop", "sleep_confirm", "chase"):
             self._draw_toast(screen)
 
     def _draw_zones(self, screen):
@@ -622,6 +779,32 @@ class Game:
             pygame.draw.rect(screen, (19, 24, 28), bg, border_radius=5)
             screen.blit(label, label_rect)
 
+    def _draw_npcs(self, screen):
+        for npc in self.npcs:
+            x = npc.position.x - self.camera.x
+            y = npc.position.y - self.camera.y
+            if -40 <= x <= screen.get_width() + 40 and -40 <= y <= screen.get_height() + 40:
+                npc.draw(screen, self.camera)
+
+    def _draw_chase(self, screen):
+        # Posicionado bem acima do toast (que some sozinho após alguns
+        # segundos) para não sobrepor o aviso inicial da perseguição.
+        remaining = max(0.0, self.chase_timer)
+        text = self.font.render(f"FUJA DO AGIOTA!  {remaining:0.1f}s", True, (255, 150, 140))
+        rect = text.get_rect(center=(screen.get_width() // 2, screen.get_height() - 160))
+        panel = rect.inflate(32, 18)
+        pygame.draw.rect(screen, (20, 25, 29), panel, border_radius=10)
+        pygame.draw.rect(screen, (196, 48, 43), panel, 2, border_radius=10)
+        screen.blit(text, rect)
+
+        bar_width = 300
+        ratio = max(0.0, min(1.0, remaining / self.chase_window)) if self.chase_window else 0.0
+        bar_rect = pygame.Rect(0, 0, bar_width, 10)
+        bar_rect.center = (screen.get_width() // 2, screen.get_height() - 188)
+        pygame.draw.rect(screen, (40, 40, 40), bar_rect, border_radius=5)
+        fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, round(bar_width * ratio), 10)
+        pygame.draw.rect(screen, (196, 48, 43), fill_rect, border_radius=5)
+
     def _draw_hud(self, screen):
         panel = pygame.Surface((screen.get_width(), 74), pygame.SRCALPHA)
         panel.fill((13, 18, 22, 218))
@@ -639,6 +822,12 @@ class Game:
         if self.tired_day:
             tired = self.font_small.render("CANSADO: velocidade reduzida", True, (255, 150, 120))
             screen.blit(tired, (screen.get_width() - tired.get_width() - 18, 44))
+        elif self.missed_payments > 0:
+            warning = self.font_small.render(
+                f"Cobranças perdidas: {self.missed_payments}/{MAX_MISSED_PAYMENTS}",
+                True, (255, 150, 120),
+            )
+            screen.blit(warning, (screen.get_width() - warning.get_width() - 18, 44))
 
     def _draw_interaction_prompt(self, screen):
         zone = self._nearby_zone()

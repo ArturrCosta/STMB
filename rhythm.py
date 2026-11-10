@@ -6,6 +6,8 @@ import time
 import wave
 from pathlib import Path
 
+import pygame
+
 
 POINTS = {"Perfect": 320, "Great": 300, "Good": 200, "OK": 100, "Meh": 50, "Miss": 0}
 # Limites inclusivos, em segundos. O último limite também vale para perdas automáticas.
@@ -38,15 +40,33 @@ def save_settings(settings, path=SETTINGS_PATH):
     path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
 
+def _audio_duration(audio_path):
+    """Duração real do arquivo de áudio, em segundos, para qualquer formato.
+
+    Arquivos .wav são lidos pelo módulo padrão `wave` (rápido, não depende
+    do mixer estar inicializado). Qualquer outro formato que o Pygame saiba
+    tocar (MP3, OGG, ...) é medido com `pygame.mixer.Sound`, que decodifica
+    o áudio via SDL_mixer. Em ambos os casos a duração é medida de verdade
+    a partir do arquivo, então músicas de qualquer tamanho funcionam sem
+    precisar mudar este código.
+    """
+    audio_path = Path(audio_path)
+    if audio_path.suffix.lower() == ".wav":
+        with wave.open(str(audio_path), "rb") as wav:
+            return wav.getnframes() / wav.getframerate()
+    if not pygame.mixer.get_init():
+        pygame.mixer.init()
+    return pygame.mixer.Sound(str(audio_path)).get_length()
+
+
 def load_beatmap(path, level):
     """Retorna mapa validado; cada pista não pode conter notas sobrepostas."""
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
     audio = path.parent / data["audio"]
     try:
-        with wave.open(str(audio), "rb") as wav:
-            audio_duration = wav.getnframes() / wav.getframerate()
-    except (wave.Error, EOFError, ZeroDivisionError) as error:
+        audio_duration = _audio_duration(audio)
+    except (wave.Error, EOFError, ZeroDivisionError, OSError, pygame.error) as error:
         raise ValueError("Arquivo de áudio inválido") from error
     duration = float(data["duration"])
     bpm = float(data["bpm"])

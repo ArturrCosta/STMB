@@ -93,12 +93,17 @@ class Player(pygame.sprite.Sprite):
         self.base_speed = 300  # pixels por segundo
         self.has_car = False
         self.tired = False
+        self.stunned_timer = 0.0
 
     def reset_position(self, center):
         """Reposiciona o personagem usando o centro da imagem."""
         self.rect.center = center
         self.position.update(self.rect.topleft)
         self._sync_hitbox()
+
+    def stun(self, seconds):
+        """Impede o movimento por alguns segundos (ex.: ao ser pego pelo agiota)."""
+        self.stunned_timer = max(self.stunned_timer, seconds)
 
     def update(
         self,
@@ -109,6 +114,13 @@ class Player(pygame.sprite.Sprite):
         on_grass=False,
     ):
         """Move o jogador, verifica colisões e atualiza o quadro da animação."""
+        if self.stunned_timer > 0:
+            # Atordoado (ex.: pego pelo agiota): não aceita movimento até passar.
+            self.stunned_timer = max(0.0, self.stunned_timer - dt)
+            self.is_moving = False
+            self._update_animation(dt)
+            return
+
         keys = pygame.key.get_pressed()
         direction = pygame.Vector2(0, 0)
 
