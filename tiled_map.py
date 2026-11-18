@@ -1,5 +1,10 @@
+import logging
+
 import pygame
 import pytmx
+
+# Camadas que formam o chão caminhável da cidade.
+WALKABLE_LAYERS = ("ground", "grass", "roads")
 
 
 class TiledMap:
@@ -12,7 +17,9 @@ class TiledMap:
 
         self.solid_rects = []
         self.grass_tiles = set()
+        self.ground_tiles = set()
         self._read_collision_data()
+        self._surface = None  # mapa inteiro pré-renderizado (criado sob demanda)
 
     def _tile_object_rect(self, obj, tile, rotated_tile=None):
         """Retorna a área ocupada pelo tile, respeitando a rotação do Tiled.
@@ -67,6 +74,11 @@ class TiledMap:
                         if gid:
                             self.grass_tiles.add((x, y))
 
+                if layer_name.lower() in WALKABLE_LAYERS:
+                    for x, y, gid in layer:
+                        if gid:
+                            self.ground_tiles.add((x, y))
+
             elif isinstance(layer, pytmx.TiledObjectGroup) and layer_name.lower() == "buildings":
                 # Só os prédios bloqueiam o movimento; itens futuros não serão paredes.
                 for obj in layer:
@@ -82,7 +94,39 @@ class TiledMap:
         tile_y = int(position[1] // self.tile_height)
         return (tile_x, tile_y) in self.grass_tiles
 
+    def is_ground_cell(self, cell_x, cell_y):
+        """True se a célula tem chão (rua, grama ou terra); fora do chão é "vazio"."""
+        if not self.ground_tiles:
+            return True
+        return (cell_x, cell_y) in self.ground_tiles
+
     def draw(self, screen, camera):
+        """Desenha só o trecho visível de um mapa pré-renderizado.
+
+        Percorrer todas as 4.800 células e os objetos a cada quadro era o
+        maior custo do jogo; agora o mapa inteiro é desenhado uma única vez.
+        """
+        if self._surface is None:
+            self._surface = self._prerender() or False  # False = falhou; não tenta de novo
+        if self._surface is False:  # sem memória para o mapa inteiro: desenho direto
+            self._draw_direct(screen, camera)
+            return
+        view = pygame.Rect(int(camera.x), int(camera.y), screen.get_width(), screen.get_height())
+        screen.blit(self._surface, (0, 0), area=view)
+
+    def _prerender(self):
+        try:
+            surface = pygame.Surface((self.width, self.height))
+        except (pygame.error, MemoryError) as error:
+            logging.error("Não foi possível pré-renderizar o mapa: %s", error)
+            return None
+        if pygame.display.get_surface() is not None:
+            surface = surface.convert()
+        surface.fill((38, 43, 45))
+        self._draw_direct(surface, _OriginCamera())
+        return surface
+
+    def _draw_direct(self, screen, camera):
         for layer in self.tmx_data.visible_layers:
 
             # Camadas normais de tiles.
@@ -120,3 +164,10 @@ class TiledMap:
                         rect.x -= camera.x
                         rect.y -= camera.y
                         screen.blit(rotated_tile, rect)
+
+
+class _OriginCamera:
+    """Câmera fixa em (0, 0), usada para desenhar o mapa inteiro de uma vez."""
+
+    x = 0
+    y = 0

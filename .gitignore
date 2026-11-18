@@ -3,4 +3,5 @@ __pycache__/
 *.py[cod]
 data/ranking.db
 data/rhythm_settings.json
-logs/game.log
+logs/
+data/savegame.json

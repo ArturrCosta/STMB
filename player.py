@@ -91,9 +91,10 @@ class Player(pygame.sprite.Sprite):
         self._sync_hitbox()
 
         self.base_speed = 300  # pixels por segundo
-        self.has_car = False
         self.tired = False
+        self.rested = False
         self.stunned_timer = 0.0
+        self.stun_duration = 0.0
 
     def reset_position(self, center):
         """Reposiciona o personagem usando o centro da imagem."""
@@ -103,6 +104,8 @@ class Player(pygame.sprite.Sprite):
 
     def stun(self, seconds):
         """Impede o movimento por alguns segundos (ex.: ao ser pego pelo agiota)."""
+        if seconds >= self.stunned_timer:
+            self.stun_duration = seconds  # usado pela barra de atordoamento
         self.stunned_timer = max(self.stunned_timer, seconds)
 
     def update(
@@ -140,12 +143,11 @@ class Player(pygame.sprite.Sprite):
 
             speed = self.base_speed
 
-            # O Fusca acelera nas ruas, mas é ruim de dirigir na grama.
-            if self.has_car:
-                speed = 300 if not on_grass else 170
 
             if self.tired:
                 speed *= 0.65
+            elif self.rested:
+                speed *= 1.10
 
             # Limita dt para evitar saltos grandes após uma queda de FPS.
             movement = direction * speed * min(max(dt, 0.0), 0.05)

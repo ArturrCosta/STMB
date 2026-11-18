@@ -1,0 +1,1 @@
+numpy  # só para tools/make_beatmap.py (gerador de fases rítmicas)

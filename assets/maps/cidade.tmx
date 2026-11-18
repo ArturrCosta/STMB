@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="80" height="60" tilewidth="32" tileheight="32" infinite="0" nextlayerid="8" nextobjectid="31">
+<map version="1.10" tiledversion="1.12.2" orientation="orthogonal" renderorder="right-down" width="80" height="60" tilewidth="32" tileheight="32" infinite="0" nextlayerid="8" nextobjectid="36">
  <tileset firstgid="1" source="tiles.tsx"/>
  <tileset firstgid="16" source="tiles do mapa.tsx"/>
  <tileset firstgid="641" source="casaA.tsx"/>
@@ -11,6 +11,11 @@
  <tileset firstgid="647" source="casaCC.tsx"/>
  <tileset firstgid="648" source="trem.tsx"/>
  <tileset firstgid="649" source="casaD.tsx"/>
+ <tileset firstgid="650" source="casa_shows.tsx"/>
+ <tileset firstgid="651" source="barzinho.tsx"/>
+ <tileset firstgid="652" source="casa_jogador.tsx"/>
+ <tileset firstgid="653" source="loja.tsx"/>
+ <tileset firstgid="654" source="feira.tsx"/>
  <layer id="1" name="Ground" width="80" height="60">
   <data encoding="csv">
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -214,6 +219,11 @@
   <object id="28" gid="647" x="1344" y="0" width="544" height="256" rotation="90"/>
   <object id="29" gid="648" x="1984" y="544" width="576" height="544"/>
   <object id="30" gid="3221226121" x="0" y="960" width="576" height="288"/>
+  <object id="31" name="casa_shows" gid="650" x="160" y="544" width="704" height="416"/>
+  <object id="32" name="barzinho" gid="651" x="0" y="1600" width="576" height="256"/>
+  <object id="33" name="casa_jogador" gid="652" x="704" y="1664" width="256" height="224" rotation="90"/>
+  <object id="34" name="loja" gid="653" x="1344" y="1376" width="256" height="256" rotation="90"/>
+  <object id="35" name="feira" gid="654" x="1984" y="960" width="576" height="288"/>
  </objectgroup>
  <layer id="3" name="Buildings" width="80" height="60">
   <data encoding="csv">

@@ -11,7 +11,7 @@ from rhythm import RhythmSession, judgment, load_beatmap, load_settings, reward_
 
 
 BEATMAP = Path(__file__).resolve().parents[1] / "assets/music/cidade_em_pulso.json"
-SETTINGS = {"approach": 2.0, "volume": 70, "audio_offset": 0, "input_offset": 0}
+SETTINGS = {"approach": 2.0, "volume": 70, "sfx_volume": 70, "audio_offset": 0, "input_offset": 0}
 
 
 class RhythmTests(unittest.TestCase):
@@ -23,8 +23,10 @@ class RhythmTests(unittest.TestCase):
         return session
 
     def test_six_windows_and_accuracy_bounds(self):
-        self.assertEqual([judgment(x) for x in (0, .06, .10, .13, .17, .19)],
+        self.assertEqual([judgment(x) for x in (0, .07, .11, .15, .20, .24)],
                          ["Perfect", "Great", "Good", "OK", "Meh", "Miss"])
+        # Uma nota "meio para fora" do receptor (~0,14 s fora do centro) ainda vale pontos.
+        self.assertNotEqual(judgment(0.14), "Miss")
         notes = [{"lane": 0, "time": 1, "duration": 0, "head": None, "tail": None}]
         s = self.make_session(notes)
         self.now = 1
@@ -39,7 +41,7 @@ class RhythmTests(unittest.TestCase):
         self.now = 1
         s.key_down(0)
         s.key_down(1)
-        self.now = 1.2
+        self.now = 1.25
         s.update()
         s.update()
         self.assertEqual((s.counts["Perfect"], s.counts["Miss"], s.max_combo, s.combo),
@@ -91,12 +93,47 @@ class RhythmTests(unittest.TestCase):
         self.assertEqual(counts, sorted(counts))
         self.assertTrue(any(n["duration"] for n in load_beatmap(BEATMAP, 4)["notes"]))
 
+    def test_combo_multiplier_events_and_bonus(self):
+        notes = [{"lane": i % 4, "time": 1 + i * 0.3, "duration": 0, "head": None, "tail": None} for i in range(60)]
+        s = self.make_session(notes)
+        for note in notes:
+            self.now = note["time"]
+            s.key_down(note["lane"])
+            s.key_up(note["lane"])
+        self.assertEqual(s.multiplier, 3)
+        self.assertIn(("multiplier", 2), s.events)
+        self.assertIn(("multiplier", 3), s.events)
+        self.assertGreater(s.score, s.base_score)
+        self.assertEqual(s.accuracy, 1.0)
+        self.assertEqual(s.bonus()[1], 3.0)
+
+    def test_bonus_levels(self):
+        notes = [{"lane": i % 4, "time": 1 + i * 0.3, "duration": 0, "head": None, "tail": None} for i in range(20)]
+        s = self.make_session(notes)
+        for i, note in enumerate(notes):
+            self.now = note["time"] + (0.07 if i == 3 else 0)  # um Great, nenhum erro
+            s.key_down(note["lane"])
+            s.key_up(note["lane"])
+        self.assertEqual(s.bonus()[1], 2.0)
+
+    def test_audio_sync_nudges_the_clock(self):
+        s = self.make_session([{"lane": 0, "time": 5, "duration": 0, "head": None, "tail": None}])
+        s.started = 0.0
+        for step in range(200):
+            self.now = 1 + step * 0.016
+            s.sync_to_audio(self.now - 0.05)  # o áudio começou 50 ms depois do relógio
+        self.assertAlmostEqual(s.sync_correction, 0.05, delta=0.015)
+
     def test_settings_and_map_offset(self):
         with tempfile.TemporaryDirectory() as folder:
             settings_path = Path(folder) / "settings.json"
             values = SETTINGS | {"audio_offset": -80, "input_offset": 120}
             save_settings(values, settings_path)
             self.assertEqual(load_settings(settings_path), values)
+            # Ajustes de versões antigas (sem "version") voltam a sincronia para zero.
+            settings_path.write_text(json.dumps({"volume": 40, "audio_offset": 100, "input_offset": 100}))
+            old = load_settings(settings_path)
+            self.assertEqual((old["volume"], old["audio_offset"], old["input_offset"]), (40, 0, 0))
             data = json.loads(BEATMAP.read_text(encoding="utf-8"))
             data["audio"] = str(BEATMAP.parent / data["audio"])
             data["offset"] = 0.1
