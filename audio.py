@@ -13,7 +13,7 @@ import pygame
 SOUND_DIR = Path(__file__).resolve().parent / "assets" / "sounds"
 EFFECTS = (
     "ui_move", "ui_confirm", "ui_back", "error", "cash", "spend", "stage_start", "success", "boo",
-    "newday", "alarm", "caught", "escape", "win", "lose", "tick",
+    "newday", "alarm", "caught", "escape", "win", "lose", "tick", "trap", "shot",
 )
 AMBIENCES = ("ambient_day", "ambient_night")
 EFFECT_VOLUME = 0.7

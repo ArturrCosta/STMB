@@ -5,7 +5,8 @@ Uso (na pasta do projeto, com o ambiente virtual ativo):
     python tools/record_chart.py assets/music/musica1.wav
     python tools/record_chart.py assets/music/nova.wav --title "Nova" --bpm 120 --offset 0.05
 
-Aperte D, F, J e K no ritmo da música, como se estivesse jogando (segure a tecla
+Aperte as 4 teclas das pistas (as de Ajustes no jogo; padrão D F J K) no ritmo da música,
+como se estivesse jogando (segure a tecla
 para criar notas longas). Ao terminar, cada toque é encaixado na semicolcheia mais
 próxima da batida e o JSON é salvo ao lado do áudio com os 5 níveis: a gravação vira
 o nível mais difícil e os mais fáceis ficam com as notas dos tempos mais fortes.
@@ -26,7 +27,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-LANE_KEYS = "dfjk"
 HOLD_MIN = 0.35        # segurar mais que isso vira nota longa
 LANE_GAP = 0.18        # mesma regra do jogo entre notas da mesma pista
 END_MARGIN = 0.25
@@ -127,6 +127,7 @@ def record(audio_path, bpm, offset, title):
     from rhythm import _audio_duration, load_settings
 
     settings = load_settings()
+    lane_keys = settings["lane_keys"]  # as mesmas teclas configuradas no jogo
     latency = settings["audio_offset"] / 1000
     duration = _audio_duration(audio_path)
     pygame.init()
@@ -157,8 +158,8 @@ def record(audio_path, bpm, offset, title):
                 return None
             if event.type in (pygame.KEYDOWN, pygame.KEYUP) and playing:
                 name = pygame.key.name(event.key)
-                if name in LANE_KEYS:
-                    lane = LANE_KEYS.index(name)
+                if name in lane_keys:
+                    lane = lane_keys.index(name)
                     if event.type == pygame.KEYDOWN:
                         held[lane] = song_time
                     elif lane in held:
@@ -171,7 +172,7 @@ def record(audio_path, bpm, offset, title):
             return presses, duration
 
         screen.fill((16, 22, 28))
-        header = f"{title}  |  {bpm:g} BPM  |  D F J K no ritmo  |  ESC cancela"
+        header = f"{title}  |  {bpm:g} BPM  |  {' '.join(k.upper() for k in lane_keys)} no ritmo  |  ESC cancela"
         screen.blit(font.render(header, True, (200, 210, 216)), (30, 24))
         if not playing:
             count = big.render(str(int(begin - now) + 1), True, (247, 203, 107))
@@ -183,7 +184,7 @@ def record(audio_path, bpm, offset, title):
                 x = 210 + lane * 160
                 lit = lane in held
                 pygame.draw.rect(screen, (247, 203, 107) if lit else (40, 52, 60), (x - 60, 200, 120, 200), border_radius=14)
-                label = big.render(LANE_KEYS[lane].upper(), True, (20, 26, 30) if lit else (230, 236, 240))
+                label = big.render(lane_keys[lane].upper(), True, (20, 26, 30) if lit else (230, 236, 240))
                 screen.blit(label, label.get_rect(center=(x, 300)))
             progress = max(0.0, min(1.0, song_time / duration))
             pygame.draw.rect(screen, (40, 52, 60), (30, 460, 840, 10), border_radius=5)

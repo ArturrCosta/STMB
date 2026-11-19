@@ -2,7 +2,7 @@
 
 ## 1. Descrição do jogo
 
-Jogo 2D em Python/Pygame. O jogador tem uma dívida com um agiota que cobra uma parcela todos os dias (dívida e cobrança crescem 50% ao dia). Para pagar, ele explora a cidade (visão de cima, mapa feito no Tiled), compra roupas e toca em três palcos com um minigame de ritmo de 4 pistas (`D F J K`). Quem não paga é caçado pelo agiota e, a cada nova falta, por mais dois capangas; ser pego encerra o jogo. Vence quem quita a dívida, embarca no trem ou sobrevive 30 dias.
+Jogo 2D em Python/Pygame. O jogador tem uma dívida com um agiota que cobra uma parcela todos os dias (dívida e cobrança crescem 50% ao dia). Para pagar, ele explora a cidade (visão de cima, mapa feito no Tiled), compra roupas e toca em três palcos com um minigame de ritmo de 4 pistas (`D F J K` por padrão, reconfiguráveis em Ajustes). Quem não paga é caçado pelo agiota e, a cada nova falta, por mais dois capangas, que largam armadilhas (1 s preso) pelo caminho; ser pego encerra o jogo. Pagar a cobrança é uma escolha (tecla B). Há duas vitórias: fugir de trem com a passagem, ou comprar um revólver (o dobro da passagem), derrubar o agiota numa caçada e dormir em casa.
 
 | Fase | Locais | Mecânica |
 |---|---|---|
@@ -28,11 +28,14 @@ classDiagram
     class Capanga
     class Mugger
     class Car { +update() +draw() }
+    class Trap { +update() +triggers() +draw() }
     class NavGrid { +find_path() +random_free_point() }
     class TiledMap { +solid_rects +draw() +is_grass_at() }
     class Camera { +update() +apply() }
     class RhythmSession { +key_down() +key_up() +update() +crowd }
-    class Ranking { +save() +top() }
+    class Ranking { +save() +top() +position() +records() }
+    class Bullet { +update() +hits() +draw() }
+    class Fallen { +update() +draw() }
     class SaveGame { +save_game() +load_game() }
 
     Game --> Player
@@ -42,6 +45,8 @@ classDiagram
     Game --> Ranking
     Game o-- NPC
     Game o-- Agiota
+    Game o-- Trap
+    Game o-- Bullet
     Game --> RhythmSession
     Game ..> SaveGame
     Walker <|-- NPC
@@ -60,22 +65,28 @@ Conceitos de OO usados: herança (`NPC` e `Agiota` herdam de `Walker`), encapsul
 Arquivo `data/ranking.db`, criado automaticamente por `ranking.py`.
 
 ```sql
-CREATE TABLE ranking (
+CREATE TABLE ranking (              -- PRAGMA user_version = 2
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     nome        TEXT    NOT NULL,   -- até 16 caracteres, espaços normalizados
     pontuacao   INTEGER NOT NULL,
     dias        INTEGER NOT NULL,
     dificuldade TEXT    NOT NULL,   -- Fácil | Normal | Difícil
     resultado   TEXT    NOT NULL,   -- vitória | derrota
+    final       TEXT    NOT NULL,   -- trem | agiota | pego | capanga
+    shows INTEGER, ganho INTEGER, precisao REAL, combo INTEGER, bonus TEXT,
+    pagamentos INTEGER, fugas INTEGER, armadilhas INTEGER, assaltos INTEGER,
+    capangas INTEGER, agiota INTEGER, tiros INTEGER, acertos INTEGER,
     criado_em   TEXT    NOT NULL    -- data/hora local
 );
 ```
 
-- `save()` grava com consulta parametrizada (sem SQL injection) e devolve `True/False`;
+- `save()` grava com consulta parametrizada (sem SQL injection) e devolve o id da linha (ou `None` se falhar);
 - `top(limite, dificuldade)` ordena por pontuação (depois dias) e aceita filtro por dificuldade;
+- `position(id)` dá a colocação da partida recém-salva e `records()` os recordes (pontos, precisão, combo, dias);
+- um banco da versão 1 (sem estatísticas) é apagado e recriado na primeira abertura (o ranking recomeça);
 - qualquer `sqlite3.Error` é registrada em `logs/error.log` e o jogo continua sem ranking em vez de travar.
 
-A pontuação vem de: pontos da música (1/10), cachê recebido (1/10) e bônus de vitória (quanto mais cedo e mais dinheiro, mais pontos).
+A pontuação vem de: pontos da música (1/10), cachê recebido (1/10), inimigos derrubados (agiota +2.000, capanga +250, assaltante +80) e bônus de vitória (quanto mais cedo e mais dinheiro, mais pontos).
 
 ## 4. Logs
 
@@ -85,7 +96,7 @@ A pontuação vem de: pontos da música (1/10), cachê recebido (1/10) e bônus 
 
 | | Fácil | Normal | Difícil |
 |---|---|---|---|
-| Velocidade (jogador / agiota) | 105% / 150 | 100% / 185 | 97% / 215 |
+| Velocidade (jogador / agiota) | 236 / 120 | 225 / 148 | 218 / 172 px/s |
 | Obstáculos (moradores) | 6 | 9 | 13 |
 | Tempo limite (fuga do agiota) | 26 s | 20 s | 15 s |
 | Nível das fases rítmicas | 1–3 | 2–4 | 3–5 |

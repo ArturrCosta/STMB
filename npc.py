@@ -31,6 +31,8 @@ class Walker:
         self.walk_phase = random.uniform(0, math.tau)
         self.moving = False
         self.blocked_time = 0.0
+        self.stuck_total = 0.0   # tempo travado somando várias tentativas (não zera ao refazer o caminho)
+        self.ghost_timer = 0.0   # destravando: atravessa os outros por um instante
         self.hitbox = pygame.Rect(0, 0, *self.HITBOX_SIZE)
         self._sync_hitbox()
 
@@ -46,11 +48,24 @@ class Walker:
         self.path = self.nav.find_path(self.position, point)
         self.blocked_time = 0.0
 
+    GHOST_AFTER = 1.2       # travado por mais que isso (somando tentativas): atravessa os outros
+    GHOST_SECONDS = 0.9
+
     def _follow_path(self, dt, blockers):
-        """Anda um passo no caminho. `blockers` são hitboxes móveis (jogador, outros NPCs)."""
+        """Anda um passo no caminho. `blockers` são hitboxes móveis (jogador, outros NPCs).
+
+        Quem já está encostado/sobreposto não bloqueia (senão dois moradores que se
+        sobrepõem nunca mais conseguem se mexer), e quem fica travado tempo demais
+        (um bolo de gente se empurrando) atravessa os outros por um instante.
+        """
         self.moving = False
         if not self.path:
             return
+        if self.ghost_timer > 0:
+            self.ghost_timer -= dt
+            blockers = []
+        else:
+            blockers = [other for other in blockers if not other.colliderect(self.hitbox)]
         target = pygame.Vector2(self.path[0])
         to_target = target - self.position
         distance = to_target.length()
@@ -67,12 +82,13 @@ class Walker:
             if any(self.hitbox.colliderect(other) for other in blockers):
                 setattr(self.position, axis, previous)
                 self._sync_hitbox()
-            elif getattr(step, axis):
+            elif abs(getattr(step, axis)) > 0.05:  # passos minúsculos (ruído de float) não contam como andar
                 moved = True
 
         if moved:
             self.moving = True
             self.blocked_time = 0.0
+            self.stuck_total = 0.0
             self.walk_phase += dt * 11
             if abs(step.x) > abs(step.y):
                 self.facing = "right" if step.x > 0 else "left"
@@ -80,6 +96,10 @@ class Walker:
                 self.facing = "down" if step.y > 0 else "up"
         else:
             self.blocked_time += dt
+            self.stuck_total += dt
+            if self.stuck_total > self.GHOST_AFTER:
+                self.stuck_total = 0.0
+                self.ghost_timer = self.GHOST_SECONDS
 
     def update(self, dt, blockers):
         raise NotImplementedError

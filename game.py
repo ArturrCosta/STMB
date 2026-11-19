@@ -14,9 +14,12 @@ from navigation import NavGrid
 from car import Car
 from npc import NPC, Agiota, Capanga, Mugger
 from player import Player
-from ranking import Ranking
-from rhythm import RhythmSession, load_beatmap, load_settings, reward_for, save_settings
+from ranking import ENDINGS, Ranking
+from rhythm import (DEFAULT_LANE_KEYS, RhythmSession, lane_key_codes, load_beatmap, load_settings, next_bonus,
+                    reward_for, save_settings)
 from tiled_map import TiledMap
+from combat import SHOT_COOLDOWN, Bullet, Fallen, draw_revolver
+from traps import TRAP_MAX, TRAP_SAFE_DISTANCE, TRAP_SPACING, TRAP_STUN, Trap
 
 
 # Coordenadas em pixels do mapa (80 x 60 tiles de 32 px).
@@ -38,6 +41,15 @@ ITEMS = {
     "fusca": {"name": "Fusca usado", "price": 900, "kind": "veiculo"},
     "passagem": {"name": "Passagem de trem", "price": 2400, "kind": "passagem"},
 }
+# Revólver: o dobro da passagem. Fica equipado e permite derrubar o agiota numa caçada.
+ITEMS["arma"] = {"name": "Revólver", "price": 2 * ITEMS["passagem"]["price"], "kind": "arma"}
+
+
+def new_stats():
+    """Estatísticas da partida mostradas no fim e guardadas no ranking."""
+    return {"days": 1, "shows": 0, "earned": 0, "best_accuracy": 0.0, "best_combo": 0, "best_bonus": "",
+            "best_bonus_mult": 0.0, "payments": 0, "paid_total": 0, "chases": 0, "escapes": 0, "traps": 0,
+            "robberies": 0, "shots": 0, "hits": 0, "capangas": 0, "agiota": 0, "muggers": 0, "cheat": 0}
 
 CLOTHING_KEYS = ["chapeu", "sapatos", "calca", "blazer"]
 # "level"/"multiplier" afetam o minigame de ritmo (dificuldade do beatmap e
@@ -48,30 +60,32 @@ DIFFICULTIES = {
     "Fácil": {
         "level": 0, "multiplier": 0.85,
         "player_speed_mult": 1.05, "npc_count": 6,
-        "agiota_speed": 150, "chase_window": 24.0, "muggers": 2, "mugger_speed": 150,
+        "agiota_speed": 120, "chase_window": 24.0, "muggers": 2, "mugger_speed": 120, "trap_interval": 2.6,
     },
     "Normal": {
         "level": 1, "multiplier": 1.0,
         "player_speed_mult": 1.0, "npc_count": 9,
-        "agiota_speed": 185, "chase_window": 20.0, "muggers": 3, "mugger_speed": 175,
+        "agiota_speed": 148, "chase_window": 20.0, "muggers": 3, "mugger_speed": 140, "trap_interval": 2.0,
     },
     "Difícil": {
         "level": 2, "multiplier": 1.25,
         "player_speed_mult": 0.97, "npc_count": 13,
-        "agiota_speed": 215, "chase_window": 16.0, "muggers": 4, "mugger_speed": 200,
+        "agiota_speed": 172, "chase_window": 16.0, "muggers": 4, "mugger_speed": 160, "trap_interval": 1.6,
     },
 }
 DAY_START, DAY_END = 8 * 60, 27 * 60  # o dia vai das 08:00 às 03:00 da madrugada
 LATE_HOUR = 22 * 60                      # a partir daqui o jogo lembra de ir dormir
 REST_BEFORE = 24 * 60                    # dormir antes da meia-noite deixa o próximo dia "descansado"
 CALIBRATION_BEATS, CALIBRATION_INTERVAL, CALIBRATION_LEAD = 14, 0.5, 1.2
-SETTINGS_ROWS = ("volume", "sfx_volume", "approach", "audio_offset", "calibrate", "back")
+SETTINGS_ROWS = ("volume", "sfx_volume", "approach", "audio_offset", "calibrate", "keys", "keys_reset", "back")
 ORANGE_TEXT = (255, 176, 102)
+# Teclas que não podem virar tecla de pista (têm função fixa no jogo).
+RESERVED_KEYS = (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_F2)
 # Volume do som ambiente por tela (0 = mudo; durante o show só toca a música).
 AMBIENT_BY_STATE = {
     "menu": 0.5, "help": 0.4, "ranking": 0.4, "end_name": 0.3, "playing": 1.0, "shop": 0.5,
     "sleep_confirm": 0.5, "chase": 1.0, "paused": 0.3, "venue_info": 0.5,
-    "rhythm_result": 0.0, "rhythm": 0.0, "settings": 0.3, "calibrate": 0.0,
+    "rhythm_result": 0.0, "rhythm": 0.0, "settings": 0.3, "calibrate": 0.0, "rebind": 0.3,
 }
 HENCHMEN_PER_MISS = 2      # cada cobrança perdida depois da primeira traz mais 2 capangas
 NIGHT_DANGER = 22 * 60     # a partir daqui assaltantes rondam a cidade
@@ -79,7 +93,15 @@ ROBBERY_SHARE = 0.4        # parte do dinheiro levada num assalto
 ROBBERY_CLOTHES_CHANCE = 0.5  # chance de o assaltante levar também uma peça de roupa
 REPEAT_PENALTY = 0.2       # cada show repetido no mesmo local, no mesmo dia, paga 20% menos...
 REPEAT_FLOOR = 0.5         # ...até no mínimo metade do cachê
-START_MONEY = 400
+# Zoom da câmera: o mundo é desenhado numa área menor (800 x 450) e ampliado para a
+# janela de 1280 x 720. O HUD, os letreiros e as setas são desenhados depois, já na
+# resolução cheia, para o texto continuar nítido.
+VIEW_SIZE = (800, 450)
+PLAYER_SPEED = 225  # px/s a pé (era 300; a câmera mais próxima pede um ritmo mais calmo)
+# Código secreto: digitar G R A N A durante o jogo liga/desliga o dinheiro ilimitado.
+CHEAT_CODE = "grana"
+CHEAT_MONEY = 999_999
+START_MONEY = 0  # começa sem nada: o primeiro cachê (Barzinho, a partir das 12h) paga a 1ª cobrança (dia 2)
 MUSIC_DIR = Path(__file__).resolve().parent / "assets" / "music"
 # Cada local tem a sua música (beatmap JSON). Na fase 2 (feira e casa de shows)
 # entra a "energia da plateia": se ela zerar, a apresentação termina sem pagamento.
@@ -104,15 +126,16 @@ DIFFICULTY_TEXT = {
 }
 HELP_LINES = (
     ("Objetivo", "Pague a cobrança diária do agiota tocando nos palcos da cidade."),
-    ("Mover", "WASD ou setas.  E: interagir e entrar/sair do Fusca.  I: inventário.  ESC/P: pausar"),
-    ("Ritmo", "D F J K nas 4 pistas. Combos dão multiplicador (2X, 3X, 4X) e bônus no cachê."),
+    ("Teclas", "WASD/setas: andar.  E: interagir e Fusca.  B: pagar.  F: atirar.  I: inventário.  ESC: pausa"),
+    ("Ritmo", "Pistas D F J K (mude em Ajustes). Combos dão 2X-4X; chegar perto do perfeito dá até x4."),
     ("Horários", "Feira 08h-18h, Barzinho 12h-03h, Casa de shows 19h-03h. Repetir o local no dia paga menos."),
     ("Noite", "Depois das 22h assaltantes rondam a cidade: a pé, você perde 40% do dinheiro e talvez uma roupa."),
     ("Dormir", "Durma em casa antes das 03:00 (antes da meia-noite = dia seguinte descansado)."),
     ("Loja", "A Feira pede 1 peça de roupa e a Casa de shows pede 3. O Fusca anda rápido (25% mais lento na grama)."),
-    ("Cobrança", "Dívida e cobrança sobem 50% ao dia. Sem dinheiro, o agiota caça você (+2 capangas a cada nova falta)."),
-    ("Derrota", "Ser pego pelo agiota ou por um capanga encerra o jogo."),
-    ("Vitória", "Quite a dívida, compre a passagem e embarque no trem, ou sobreviva 30 dias."),
+    ("Cobrança", "Pague com B (ou no HUD) antes de dormir. Quem não paga é caçado (+2 capangas a cada falta)."),
+    ("Revólver", "Na loja por R$ 4.800. F atira para onde você olha; o clique atira no cursor."),
+    ("Derrota", "Ser pego encerra o jogo. Na caçada eles largam armadilhas: pisar numa prende por 1 s."),
+    ("Vitória", "Fuja de trem com a passagem, ou derrube o agiota numa caçada e durma em casa."),
 )
 
 
@@ -128,8 +151,8 @@ class Game:
             raise
         self.player.reset_position((1280, 900))
         self.camera = Camera(
-            1280,
-            720,
+            VIEW_SIZE[0],
+            VIEW_SIZE[1],
             self.tiled_map.width,
             self.tiled_map.height,
         )
@@ -145,10 +168,13 @@ class Game:
         self.driving = False
         self.popups = []      # textos grandes animados no show ("2X", "COMBO 50!")
         self.sparks = []      # partículas dos efeitos
+        self.world_sparks = []  # partículas no mapa (armadilha fechando)
+        self._world = None      # superfície do mundo antes do zoom
         self.toast_kind = "info"
         self.toast_total = 0.0
         self.settings_index = 0
         self.calibration = None
+        self.rebind = None
         self.mouse_pos = (-1, -1)
         self.venue_info = None
         self.nav = NavGrid(
@@ -176,6 +202,9 @@ class Game:
         self.menu_options = self._build_menu()
         self.paused_from = "playing"
         self.ranking_filter = None  # None = todas as dificuldades
+        self.ranking_index = 0      # linha selecionada no ranking (detalhes embaixo)
+        self.last_rank_id = None    # partida recém-salva (destacada no ranking)
+        self.last_rank_position = None
         self.victory_bonus = 0
         self.selected_zone = None
         self.shop_index = 0
@@ -211,6 +240,9 @@ class Game:
         # quando uma cobrança não é paga.
         self.npcs = []
         self.hunters = []  # agiota + capangas durante a caçada
+        self.traps = []    # armadilhas que eles largam pelo caminho
+        self.stun_label = "ATORDOADO"
+        self._reset_run_extras()
         self.missed_payments = 0
         self.chase_timer = 0.0
         self.chase_window = 0.0
@@ -227,6 +259,9 @@ class Game:
         if self.state == "calibrate" and event.type == pygame.KEYDOWN:
             self._handle_calibration_key(event.key)
             return
+        if self.state == "rebind" and event.type == pygame.KEYDOWN:
+            self._handle_rebind_key(event.key)
+            return
         if event.type == pygame.MOUSEMOTION:
             self.mouse_pos = event.pos  # já em coordenadas do jogo (convertido em main.py)
             return
@@ -236,6 +271,9 @@ class Game:
                     if rect.collidepoint(event.pos):
                         action()
                         break
+                else:
+                    if self.state in ("playing", "chase") and self._armed():
+                        self._shoot(self._to_world(event.pos))
             return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_F2:
             muted = self.audio.toggle_mute()
@@ -247,6 +285,9 @@ class Game:
             return
         if event.type != pygame.KEYDOWN:
             return
+
+        if self.state in ("playing", "shop"):
+            self._cheat_input(event)
 
         if self.state == "menu":
             self._handle_menu(event.key)
@@ -261,11 +302,17 @@ class Game:
         elif self.state == "chase":
             if event.key in (pygame.K_ESCAPE, pygame.K_p):
                 self._pause()
+            elif event.key == pygame.K_f:
+                self._shoot()
+            elif event.key == pygame.K_b:
+                self._pay_now()
         elif self.state == "shop":
             self._handle_shop(event.key)
         elif self.state == "sleep_confirm":
             if event.key in (pygame.K_RETURN, pygame.K_SPACE):
                 self._confirm_sleep()
+            elif event.key == pygame.K_b:
+                self._pay_now()
             elif event.key in (pygame.K_ESCAPE, pygame.K_e):
                 self._cancel_sleep()
         elif self.state == "venue_info":
@@ -287,6 +334,12 @@ class Game:
                 self._cycle_ranking_filter(-1)
             elif event.key in (pygame.K_RIGHT, pygame.K_d):
                 self._cycle_ranking_filter(1)
+            elif event.key in (pygame.K_UP, pygame.K_w):
+                self.ranking_index = max(0, self.ranking_index - 1)
+                self.audio.play("ui_move")
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.ranking_index = min(9, self.ranking_index + 1)
+                self.audio.play("ui_move")
             elif event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_m):
                 self.state = self.rank_return_state
         elif self.state == "end_name":
@@ -320,6 +373,9 @@ class Game:
             if self.clock_minutes >= 27 * 60 and self.state not in ("rhythm", "chase"):
                 self._advance_day(slept=False, forced=True)
 
+        if self.cheat_money:
+            self.money = max(self.money, CHEAT_MONEY)
+
         if self.state == "calibrate":
             self._update_calibration()
 
@@ -328,6 +384,7 @@ class Game:
             self._update_npcs(dt)
             self._move_player(dt)
             self._update_muggers(dt)
+            self._update_combat(dt)
 
         elif self.state == "rhythm":
             self._update_rhythm(dt)
@@ -352,6 +409,7 @@ class Game:
         if self.paused_from == "playing":
             self._autosave()
         self.hunters = []
+        self.traps = []
         self.has_save = savegame.has_save()
         self.menu_options = self._build_menu()
         self.menu_index = 0
@@ -361,6 +419,8 @@ class Game:
         options = [None] + self.difficulty_names
         index = options.index(self.ranking_filter)
         self.ranking_filter = options[(index + step) % len(options)]
+        self.ranking_index = 0
+        self.audio.play("ui_move")
 
     def _set_difficulty(self, step):
         self.difficulty_index = (self.difficulty_index + step) % len(self.difficulty_names)
@@ -398,6 +458,7 @@ class Game:
         elif choice == "Ranking":
             self.end_result = None
             self.result_saved = False
+            self.ranking_index = 0
             self.rank_return_state = "menu"
             self.state = "ranking"
         elif choice == "Como jogar":
@@ -412,10 +473,26 @@ class Game:
         self.menu_index = index
         self._activate_menu_option()
 
+    def _reset_run_extras(self):
+        """Estado da partida ligado à cobrança, à arma e às estatísticas do placar."""
+        self.paid_next = False      # cobrança da manhã seguinte já paga (botão B)
+        self.agiota_dead = False    # derrubado a tiros: sem cobranças; dormir encerra com vitória
+        self.fleeing = []           # capangas fugindo depois que o agiota cai
+        self.bullets = []
+        self.fallen = []            # quem levou tiro (cai e some aos poucos)
+        self.shot_cooldown = 0.0
+        self.aim = pygame.Vector2(0, 1)
+        self.end_ending = None
+        self.banner = None          # letreiro grande no meio da tela ("AGIOTA DERRUBADO!")
+        self.stats = new_stats()
+        self.cheat_money = False
+        self.cheat_buffer = ""
+        self.money_before_cheat = 0
+
     def _start_new_game(self, announce=True):
         self.player = Player()
         self.player.reset_position((1280, 900))
-        self.player.base_speed = round(300 * DIFFICULTIES[self.difficulty]["player_speed_mult"])
+        self.player.base_speed = round(PLAYER_SPEED * DIFFICULTIES[self.difficulty]["player_speed_mult"])
         self.inventory = []
         self.money = START_MONEY
         self.debt = 1000
@@ -434,6 +511,8 @@ class Game:
         self.rhythm_result = None
         self.missed_payments = 0
         self.hunters = []
+        self.traps = []
+        self._reset_run_extras()
         self.muggers = []
         self.car = None
         self.driving = False
@@ -448,13 +527,12 @@ class Game:
         self._refresh_shop_stock()
         self.camera.update(self.player)
 
-        # O jogo começa depois de pagar a primeira cobrança da manhã.
-        self.money -= self.daily_payment
-        self.debt = max(0, self.debt - self.daily_payment)
-        logging.info("Nova partida. Dificuldade=%s; cobrança inicial paga=%s", self.difficulty, self.daily_payment)
+        # Começa sem dinheiro: o agiota dá o primeiro dia de prazo e cobra na manhã seguinte.
+        logging.info("Nova partida. Dificuldade=%s; dinheiro inicial=%s", self.difficulty, self.money)
         self.state = "playing"
         if announce:
-            self._set_toast(f"Dia 1: cobrança de R$ {self.daily_payment} paga. Vá trabalhar!")
+            self._set_toast(f"Dia 1: bolso vazio e dívida de {ui.money(self.debt)}. O Barzinho abre às 12h; "
+                            f"a primeira cobrança vem amanhã cedo.", seconds=6)
 
     # ------------------------------------------------------------------
     # NPCs e agiota
@@ -494,7 +572,8 @@ class Game:
         obstacles = self.tiled_map.solid_rects + self._npc_obstacles()
         if self.driving and self.car is not None:
             on_grass = self.tiled_map.is_grass_at(self.car.position)
-            self.car.update(dt, self._input_direction(), obstacles,
+            steering = self._input_direction() if self.player.stunned_timer <= 0 else pygame.Vector2()
+            self.car.update(dt, steering, obstacles,
                             self.tiled_map.width, self.tiled_map.height, on_grass)
             self.player.reset_position((round(self.car.position.x), round(self.car.position.y) - 15))
             self.player.stunned_timer = max(0.0, self.player.stunned_timer - dt)
@@ -505,12 +584,44 @@ class Game:
             self.player.update(dt, obstacles, self.tiled_map.width, self.tiled_map.height, on_grass=on_grass)
         self.camera.update(self.player)
 
+    def _rescue_from_walls(self):
+        """Saves de antes de o vazio virar parede podem deixar o jogador (ou o Fusca) dentro de um bloco."""
+        walls = self.tiled_map.solid_rects
+        if any(self.player.hitbox.colliderect(wall) for wall in walls):
+            cell = self.nav.nearest_free(self.nav.cell_of(self.player.hitbox.center), max_radius=12)
+            if cell is not None:
+                self._place_player_feet(self.nav.center_of(cell))
+                logging.info("Jogador estava dentro de uma parede; movido para %s", cell)
+        if self.car is not None:
+            if any(self.car.hitbox.colliderect(wall) for wall in walls):
+                cell = self.nav.nearest_free(self.nav.cell_of(self.car.position), max_radius=12)
+                if cell is not None:
+                    self.car.position.update(self.nav.center_of(cell))
+                    self.car.velocity.update(0, 0)
+                    self.car._sync_hitbox()
+                    logging.info("Fusca estava dentro de uma parede; movido para %s", cell)
+
     # ---- Fusca
     def _spawn_car_near_shop(self):
         shop = next(zone for zone in ZONES if zone["id"] == "shop")
-        point = (self.nav.random_free_point(near=shop["position"], radius_cells=3, min_distance=40)
-                 or self.nav.random_free_point(near=shop["position"], radius_cells=8) or shop["position"])
-        self.car = Car(point)
+        # Fora do raio de interação da loja (92 px), para o E perto do carro entrar nele e não na loja,
+        # e com a lataria inteira livre (o carro é maior que a célula da grade e não pode nascer na parede).
+        walls = self.tiled_map.solid_rects
+        body = pygame.Rect(0, 0, Car.HITBOX_SIZE[0] + 8, Car.HITBOX_SIZE[1] + 8)
+
+        def clear(cell):
+            body.center = self.nav.center_of(cell)
+            return not any(body.colliderect(wall) for wall in walls)
+
+        shop_cell = self.nav.cell_of(shop["position"])
+        for radius, min_distance in ((5, 130), (10, 110), (16, 0)):
+            cells = [cell for cell in self.nav.free_cells()
+                     if abs(cell[0] - shop_cell[0]) <= radius and abs(cell[1] - shop_cell[1]) <= radius
+                     and math.dist(self.nav.center_of(cell), shop["position"]) >= min_distance and clear(cell)]
+            if cells:
+                self.car = Car(self.nav.center_of(random.choice(cells)))
+                return
+        self.car = Car(shop["position"])
 
     def _car_nearby(self):
         return (self.car is not None and not self.driving
@@ -574,6 +685,8 @@ class Game:
         if stolen:
             self.inventory.remove(stolen)
         self.player.stun(2.5)
+        self.stun_label = "ASSALTADO"
+        self.stats["robberies"] += 1
         self.muggers.remove(mugger)  # o assaltante foge com o que levou
         self.audio.play("caught")
         message = f"Assalto! Levaram {ui.money(lost)}"
@@ -618,43 +731,60 @@ class Game:
         henchmen = HENCHMEN_PER_MISS * max(0, self.missed_payments - 1)
         spawns = self._hunter_spawns(1 + henchmen)
         self.hunters = [Agiota(spawns[0], settings["agiota_speed"], self.nav, role="direct")]
-        roles = (("flank", 1), ("flank", -1), ("intercept", 1), ("cutoff", 1), ("direct", 1), ("intercept", -1))
+        # Metade dos capangas mira à frente do jogador (onde ele vai estar), não onde ele está.
+        roles = (("intercept", 1), ("cutoff", 1), ("flank", 1), ("intercept", -1), ("flank", -1), ("cutoff", -1))
         for index, point in enumerate(spawns[1:]):
             role, side = roles[index % len(roles)]
             speed = settings["agiota_speed"] * random.uniform(0.84, 0.97)
             self.hunters.append(Capanga(point, speed, self.nav, role=role, side=side))
         self._body_prev = pygame.Vector2(self._body().center)
         self._body_velocity = pygame.Vector2()
+        self.traps = []
         for hunter in self.hunters:
             hunter.set_goal(self._body().center)
+            hunter.trap_timer = random.uniform(1.0, 2.0)  # primeiras armadilhas desencontradas
         self.state = "chase"
+        self.stats["chases"] += 1
         self.audio.play("alarm")
         who = "o agiota" if not henchmen else f"o agiota e {henchmen} capangas"
-        self._set_toast(f"Sem dinheiro para a cobrança! {who.capitalize()} estão atrás de você. "
-                        f"Sobreviva {int(self.chase_window)}s sem ser pego!" if henchmen else
-                        f"Sem dinheiro para a cobrança! O agiota está atrás de você. Sobreviva {int(self.chase_window)}s!",
+        armed = " Você está armado: F ou clique para atirar." if self._armed() else ""
+        self._set_toast(f"Cobrança não paga! {who.capitalize()} estão atrás de você. "
+                        f"Sobreviva {int(self.chase_window)}s sem ser pego!{armed}" if henchmen else
+                        f"Cobrança não paga! O agiota está atrás de você. Sobreviva {int(self.chase_window)}s!{armed}",
                         seconds=5, kind="bad")
         logging.info("Caçada iniciada no dia %s (cobrança perdida nº %s, %s capangas)",
                      self.day, self.missed_payments, henchmen)
 
     def _hunter_target(self, hunter, player, velocity):
-        """Para onde cada caçador corre, conforme o papel dele (evita que andem todos juntos)."""
+        """Para onde cada caçador corre, conforme o papel dele.
+
+        Ninguém mira só onde o jogador está agora (senão todos ficam atrás dele e basta
+        correr): o agiota mira um pouco à frente, os interceptadores calculam onde vão
+        encontrá-lo, os de "corte" fecham o caminho bem lá na frente e os de flanco cercam
+        pelos lados já adiantados.
+        """
         distance = hunter.position.distance_to(player)
-        if hunter.role == "direct" or distance < 150:
-            return player
+        moving = velocity.length_squared() > 400
+        if distance < 56 or not moving:
+            return pygame.Vector2(player)
+        speed = max(40.0, hunter.speed)
+        eta = min(1.8, distance / speed)  # quanto tempo o caçador leva até lá
         if hunter.role == "intercept":
-            lead = velocity * min(1.3, distance / 260)
-            if lead.length() > 320:
-                lead.scale_to_length(320)
+            # Interceptação em duas passadas: onde o jogador estará quando o caçador chegar.
+            guess = player + velocity * eta
+            eta = min(1.8, hunter.position.distance_to(guess) / speed)
+            lead = velocity * eta
+            if lead.length() > 440:
+                lead.scale_to_length(440)
             target = player + lead
-        elif hunter.role == "cutoff" and velocity.length_squared() > 400:
-            target = player + velocity.normalize() * 300
+        elif hunter.role == "cutoff":
+            target = player + velocity.normalize() * min(460, 160 + distance * 0.6)
         elif hunter.role == "flank":
             toward = player - hunter.position
-            side = pygame.Vector2(-toward.y, toward.x).normalize() * hunter.side * min(240, distance * 0.55)
-            target = player + side
-        else:
-            target = player
+            side = pygame.Vector2(-toward.y, toward.x).normalize() * hunter.side * min(200, distance * 0.5)
+            target = player + side + velocity * min(0.8, eta)
+        else:  # "direct" (o agiota): vai no jogador, mas já mirando um pouco à frente
+            target = player + velocity * min(0.45, eta)
         target.x = max(16, min(self.tiled_map.width - 16, target.x))
         target.y = max(16, min(self.tiled_map.height - 16, target.y))
         return target
@@ -690,6 +820,10 @@ class Game:
         for hunter in self.hunters:
             hunter.update(dt, blockers, self._hunter_target(hunter, player, pygame.Vector2(self._body_velocity)))
         self._separate_hunters()
+        self._update_combat(dt)
+        if self.state != "chase":  # o agiota caiu: a caçada acabou
+            return
+        self._update_traps(dt, body)
         for hunter in self.hunters:
             if body.colliderect(hunter.hitbox):
                 self._resolve_chase(caught=True, by=hunter)
@@ -698,22 +832,265 @@ class Game:
         if self.chase_timer <= 0:
             self._resolve_chase(caught=False)
 
+    def _update_traps(self, dt, body):
+        """Cada caçador larga uma armadilha a cada `trap_interval` s; pisar numa prende por 1 s."""
+        interval = DIFFICULTIES[self.difficulty]["trap_interval"]
+        player = pygame.Vector2(body.center)
+        for hunter in self.hunters:
+            hunter.trap_timer = getattr(hunter, "trap_timer", interval) - dt
+            if hunter.trap_timer > 0:
+                continue
+            spot = pygame.Vector2(hunter.hitbox.center)
+            if (spot.distance_to(player) < TRAP_SAFE_DISTANCE
+                    or any(trap.position.distance_to(spot) < TRAP_SPACING for trap in self.traps)):
+                hunter.trap_timer = 0.25  # lugar ruim: tenta de novo daqui a pouco
+                continue
+            self.traps.append(Trap(spot))
+            hunter.trap_timer = interval * random.uniform(0.85, 1.2)
+        self.traps = self.traps[-TRAP_MAX:]
+        for trap in self.traps:
+            trap.update(dt)
+        self.traps = [trap for trap in self.traps if not trap.expired]
+        if self.player.stunned_timer > 0:
+            return
+        for trap in self.traps:
+            if trap.triggers(body):
+                self.traps.remove(trap)
+                self._trapped()
+                return
+
+    def _trapped(self):
+        self.player.stun(TRAP_STUN)
+        self.stun_label = "PRESO"
+        self.stats["traps"] += 1
+        if self.driving and self.car is not None:
+            self.car.velocity.update(0, 0)  # pneu preso: o Fusca para na hora
+        self.audio.play("trap")
+        self._burst_world((200, 206, 212), self._body().center)
+        logging.info("Jogador caiu numa armadilha no dia %s", self.day)
+
+    def _burst_world(self, color, point, count=14):
+        """Faíscas no mapa (coordenadas do mundo), usadas pela armadilha."""
+        for _ in range(count):
+            angle = random.uniform(0, math.tau)
+            speed = random.uniform(60, 180)
+            self.world_sparks.append([point[0], point[1], math.cos(angle) * speed, math.sin(angle) * speed,
+                                      0.0, random.uniform(0.25, 0.45), color])
+
+    def _update_world_sparks(self, dt):
+        for spark in self.world_sparks:
+            spark[0] += spark[2] * dt
+            spark[1] += spark[3] * dt
+            spark[4] += dt
+        self.world_sparks = [spark for spark in self.world_sparks if spark[4] < spark[5]]
+
+    # ---- revólver
+    def _armed(self):
+        return "arma" in self.inventory
+
+    def _to_world(self, screen_pos):
+        zoom = getattr(self, "zoom", 1280 / VIEW_SIZE[0])
+        return pygame.Vector2(self.camera.x + screen_pos[0] / zoom, self.camera.y + screen_pos[1] / zoom)
+
+    def _gun_origin(self):
+        return pygame.Vector2(self.player.hitbox.centerx, self.player.hitbox.bottom - 20)
+
+    def _facing_vector(self):
+        moving = self._input_direction()
+        if moving.length_squared() > 0:
+            return moving.normalize()
+        return {"up": pygame.Vector2(0, -1), "down": pygame.Vector2(0, 1), "left": pygame.Vector2(-1, 0),
+                "right": pygame.Vector2(1, 0)}[self.player.facing]
+
+    def _shoot(self, target=None):
+        if not self._armed() or self.state not in ("playing", "chase"):
+            return False
+        if self.driving:
+            self._set_toast("Saia do Fusca (E) para atirar.", kind="warn")
+            return False
+        if self.player.stunned_timer > 0 or self.shot_cooldown > 0:
+            return False
+        origin = self._gun_origin()
+        direction = (pygame.Vector2(target) - origin) if target is not None else self._facing_vector()
+        if direction.length_squared() < 1:
+            return False
+        self.aim = direction.normalize()
+        self.bullets.append(Bullet(origin + self.aim * 14, self.aim))
+        self.shot_cooldown = SHOT_COOLDOWN
+        self.stats["shots"] += 1
+        self.audio.play("shot")
+        self._burst_world((255, 220, 140), origin + self.aim * 16, count=6)
+        return True
+
+    def _targets(self):
+        return list(self.hunters) + list(self.fleeing) + list(self.muggers)
+
+    @staticmethod
+    def _body_rect(walker):
+        """Corpo inteiro (dos pés à cabeça): a hitbox de colisão é só a dos pés."""
+        return pygame.Rect(walker.hitbox.centerx - 11, walker.hitbox.bottom - 46, 22, 46)
+
+    def _update_combat(self, dt):
+        self.shot_cooldown = max(0.0, self.shot_cooldown - dt)
+        if self._input_direction().length_squared() > 0:
+            self.aim = self._input_direction().normalize()
+        walls = self.tiled_map.solid_rects
+        for bullet in self.bullets:
+            impact = bullet.update(dt, walls)
+            if impact is not None:
+                self._burst_world((180, 184, 190), impact, count=5)
+                continue
+            if not bullet.alive:
+                continue
+            for target in self._targets():
+                if self._body_rect(target).collidepoint(round(bullet.position.x), round(bullet.position.y)):
+                    bullet.alive = False
+                    self._shot_down(target)
+                    break
+        self.bullets = [bullet for bullet in self.bullets if bullet.alive]
+        for body in self.fallen:
+            body.update(dt)
+        self.fallen = [body for body in self.fallen if not body.done]
+        self._update_fleeing(dt)
+        self._update_world_sparks(dt)
+        if self.banner:
+            self.banner["age"] += dt
+            if self.banner["age"] > 3.2:
+                self.banner = None
+
+    def _shot_down(self, target):
+        self.stats["hits"] += 1
+        self.fallen.append(Fallen(target))
+        self._burst_world((220, 60, 50), target.hitbox.center, count=16)
+        for group in (self.hunters, self.fleeing, self.muggers):
+            if target in group:
+                group.remove(target)
+        if isinstance(target, Capanga):
+            self.stats["capangas"] += 1
+            self.score += 250
+            self.audio.play("caught", 0.7)
+            self._set_toast("Capanga derrubado! +250 pontos.", seconds=2.5, kind="good")
+        elif isinstance(target, Agiota):
+            self._agiota_down()
+        else:
+            self.stats["muggers"] += 1
+            self.score += 80
+            self.audio.play("caught", 0.6)
+            self._set_toast("Assaltante derrubado! +80 pontos.", seconds=2.5, kind="good")
+        logging.info("Tiro acertou: %s", type(target).__name__)
+
+    def _agiota_down(self):
+        self.agiota_dead = True
+        self.stats["agiota"] = 1
+        self.score += 2000
+        self.debt = 0
+        self.paid_next = False
+        corners = [(48, 48), (self.tiled_map.width - 48, 48), (48, self.tiled_map.height - 48),
+                   (self.tiled_map.width - 48, self.tiled_map.height - 48)]
+        player = pygame.Vector2(self.player.hitbox.center)
+        for hunter in self.hunters:  # os capangas largam tudo e correm para o canto mais longe
+            hunter.flee_goal = max(corners, key=lambda corner: player.distance_to(corner))
+            hunter.flee_timer = 9.0
+            hunter.speed *= 1.15
+            hunter.set_goal(hunter.flee_goal)
+            self.fleeing.append(hunter)
+        self.hunters = []
+        self.traps = []
+        if self.state == "chase":
+            self.state = "playing"
+        self.audio.play("win")
+        self._add_world_banner("AGIOTA DERRUBADO!")
+        self._set_toast("Você derrubou o agiota! Os capangas fugiram e a dívida acabou. Durma em casa para encerrar "
+                        "com vitória, pegue o trem ou continue tocando para somar pontos.", seconds=8, kind="good")
+        logging.info("Agiota derrubado no dia %s", self.day)
+        self._autosave()
+
+    def _update_fleeing(self, dt):
+        for hunter in self.fleeing:
+            hunter.flee_timer -= dt
+            hunter.update(dt, [], hunter.flee_goal)
+        self.fleeing = [hunter for hunter in self.fleeing
+                        if hunter.flee_timer > 0 and hunter.position.distance_to(hunter.flee_goal) > 48]
+
+    def _add_world_banner(self, text):
+        self.banner = {"text": text, "age": 0.0}
+
     def _resolve_chase(self, caught, by=None):
         self.hunters = []
+        self.traps = []
+        self.world_sparks = []
         if caught:
             who = "um capanga do agiota" if isinstance(by, Capanga) else "o agiota"
             self.audio.play("caught")
             logging.info("Jogador pego por %s no dia %s", who, self.day)
-            self._finish_game("derrota", f"Você foi pego por {who} no dia {self.day}.")
+            self._finish_game("derrota", f"Você foi pego por {who} no dia {self.day}.",
+                              ending="capanga" if isinstance(by, Capanga) else "pego")
             return
+        self.stats["escapes"] += 1
         self.audio.play("escape")
         self._set_toast("Você despistou a cobrança por hoje! Mas a dívida continua crescendo.", seconds=4, kind="good")
         logging.info("Jogador escapou da caçada no dia %s", self.day)
         self.state = "playing"
 
+    def _cheat_input(self, event):
+        """Guarda as últimas letras digitadas; o código secreto liga/desliga o dinheiro ilimitado."""
+        char = (getattr(event, "unicode", "") or "").lower()
+        if not char.isalpha():
+            return
+        self.cheat_buffer = (self.cheat_buffer + char)[-len(CHEAT_CODE):]
+        if self.cheat_buffer != CHEAT_CODE:
+            return
+        self.cheat_buffer = ""
+        self.cheat_money = not self.cheat_money
+        if self.cheat_money:
+            self.money_before_cheat = self.money
+            self.money = CHEAT_MONEY
+            self.audio.play("cash")
+            self._set_toast("Código secreto: dinheiro ilimitado! (digite de novo para desligar)", seconds=4, kind="good")
+        else:
+            self.money = min(self.money, self.money_before_cheat)
+            self.audio.play("ui_back")
+            self._set_toast("Dinheiro ilimitado desligado.", seconds=3)
+        self.stats["cheat"] = 1
+        logging.info("Código secreto de dinheiro: %s", "ligado" if self.cheat_money else "desligado")
+
+    def _next_payment(self):
+        return math.ceil(self.daily_payment * 1.5)
+
+    def _pay_now(self):
+        """Paga adiantado a cobrança da manhã seguinte (tecla B ou botão no HUD)."""
+        if self.agiota_dead:
+            self.audio.play("error", 0.6)
+            self._set_toast("O agiota não cobra mais ninguém.", kind="info")
+            return False
+        if self.paid_next:
+            self.audio.play("error", 0.6)
+            self._set_toast(f"A cobrança do dia {self.day + 1} já está paga. Pode dormir tranquilo.", kind="good")
+            return False
+        amount = self._next_payment()
+        if self.money < amount:
+            self.audio.play("error")
+            self._set_toast(f"Faltam {ui.money(amount - self.money)} para pagar a cobrança de {ui.money(amount)}.",
+                            kind="bad")
+            return False
+        self.money -= amount
+        self.paid_next = True
+        self.stats["payments"] += 1
+        self.stats["paid_total"] += amount
+        self.audio.play("spend")
+        self._set_toast(f"Cobrança do dia {self.day + 1} paga ({ui.money(amount)}). O agiota não vem atrás de você.",
+                        kind="good")
+        logging.info("Cobrança do dia %s paga adiantada: R$ %s", self.day + 1, amount)
+        self._autosave()
+        return True
+
     def _handle_playing(self, key):
         if key == pygame.K_ESCAPE or key == pygame.K_p:
             self._pause()
+        elif key == pygame.K_b:
+            self._pay_now()
+        elif key == pygame.K_f:
+            self._shoot()
         elif key in (pygame.K_e, pygame.K_RETURN):
             if self.driving:
                 self._exit_car()
@@ -764,7 +1141,7 @@ class Game:
             self.state = "sleep_confirm"
         elif zone_id == "station":
             if "passagem" in self.inventory:
-                self._finish_game("vitória", "Você embarcou no trem e escapou da cobrança!")
+                self._finish_game("vitória", "Você embarcou no trem e deixou a cidade para trás!", ending="trem")
             else:
                 self.audio.play("error")
                 self._set_toast("A estação exige uma passagem de trem. Compre na loja.", kind="warn")
@@ -773,7 +1150,7 @@ class Game:
         # As roupas disponíveis mudam diariamente; carro e passagem ficam à venda.
         start = (self.day - 1) % len(CLOTHING_KEYS)
         clothes = [CLOTHING_KEYS[(start + i) % len(CLOTHING_KEYS)] for i in range(3)]
-        self.shop_stock = clothes + ["fusca", "passagem"]
+        self.shop_stock = clothes + ["fusca", "passagem", "arma"]
 
     def _handle_shop(self, key):
         if key == pygame.K_ESCAPE:
@@ -821,6 +1198,11 @@ class Game:
             self._set_toast("Fusca comprado! Ele está estacionado ao lado da loja: chegue perto e aperte E.",
                             seconds=5, kind="good")
             return
+        if item_key == "arma":
+            self._set_toast("Revólver equipado! F atira para onde você olha; o clique atira no cursor. "
+                            "Derrube o agiota numa caçada (não pague a cobrança) e os capangas fogem.",
+                            seconds=7, kind="good")
+            return
         self._set_toast(f"Comprou {item['name']} por {ui.money(item['price'])}.", kind="good")
 
     def _advance_day(self, slept, forced=False):
@@ -832,8 +1214,9 @@ class Game:
         self.reminders = set()
         self.muggers = []
         self.day += 1
-        self.debt = math.ceil(self.debt * 1.5)
-        self.daily_payment = math.ceil(self.daily_payment * 1.5)
+        if not self.agiota_dead:
+            self.debt = math.ceil(self.debt * 1.5)
+            self.daily_payment = math.ceil(self.daily_payment * 1.5)
         self.clock_minutes = 180 if forced else 8 * 60
         self.tired_day = bool(forced and not slept)
         if self.tired_day:
@@ -841,7 +1224,17 @@ class Game:
         self.player.tired = self.tired_day
         self.player.rested = self.rested_day
 
-        if self.money < self.daily_payment:
+        self.stats["days"] = self.day
+        self._refresh_shop_stock()
+        if self.agiota_dead:  # sem agiota, sem cobrança: o jogo segue até dormir em casa ou pegar o trem
+            self.audio.play("newday")
+            self._set_toast(f"Dia {self.day}: ninguém vem cobrar. Durma em casa para encerrar a história, "
+                            "pegue o trem ou continue tocando para somar pontos.", seconds=5, kind="good")
+            self.state = "playing"
+            self._autosave()
+            return
+
+        if not self.paid_next:
             self.missed_payments += 1
             logging.warning(
                 "Cobrança de R$ %s não paga no dia %s (cobrança perdida nº %s)",
@@ -850,10 +1243,9 @@ class Game:
             self._start_chase()
             return
 
-        self.money -= self.daily_payment
+        self.paid_next = False
         self.debt = max(0, self.debt - self.daily_payment)
         self.audio.play("newday")
-        self._refresh_shop_stock()
         logging.info(
             "Dia %s: cobrança de R$ %s paga; dinheiro=%s; dívida=%s",
             self.day,
@@ -862,22 +1254,15 @@ class Game:
             self.debt,
         )
 
-        if self.debt <= 0:
-            self._finish_game("vitória", "Você quitou a dívida inteira e o agiota não tem mais o que cobrar!")
-            return
-        if self.day >= 30:
-            self._finish_game("vitória", "Você sobreviveu por 30 dias e o agiota morreu de velhice!")
-            return
-
         paid = ui.money(self.daily_payment)
         if forced:
-            self._set_toast(f"03:00 e você não dormiu! Dia {self.day}: cobrança de {paid} paga, "
+            self._set_toast(f"03:00 e você não dormiu! Dia {self.day}: o agiota levou os {paid} que você pagou, "
                             "mas hoje você está cansado e anda mais devagar.", seconds=5, kind="warn")
         elif self.rested_day:
             self._set_toast(f"Dia {self.day}: você dormiu cedo e acordou descansado (+10% de velocidade). "
-                            f"Cobrança de {paid} paga.", seconds=5, kind="good")
+                            f"O agiota recolheu os {paid}.", seconds=5, kind="good")
         else:
-            self._set_toast(f"Dia {self.day}: cobrança de {paid} paga ao agiota.", seconds=4, kind="info")
+            self._set_toast(f"Dia {self.day}: o agiota recolheu os {paid} que você pagou.", seconds=4, kind="info")
 
         self.state = "playing"
         self._autosave()
@@ -982,8 +1367,7 @@ class Game:
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self._abandon_rhythm("Apresentação abandonada: sem pagamento.")
             return
-        key_to_lane = {pygame.K_d: 0, pygame.K_f: 1, pygame.K_j: 2, pygame.K_k: 3}
-        lane = key_to_lane.get(event.key)
+        lane = self.lane_codes.index(event.key) if event.key in self.lane_codes else None
         if lane is not None:
             if event.type == pygame.KEYDOWN:
                 self.rhythm.key_down(lane)
@@ -1014,6 +1398,14 @@ class Game:
             self.score += reward // 10
         self.money += reward
         self.shows_today[self.active_venue] = self.shows_today.get(self.active_venue, 0) + 1
+        if not failed:
+            stats = self.stats
+            stats["shows"] += 1
+            stats["earned"] += reward
+            stats["best_accuracy"] = max(stats["best_accuracy"], round(accuracy, 4))
+            stats["best_combo"] = max(stats["best_combo"], self.rhythm.max_combo)
+            if bonus and bonus[1] > stats["best_bonus_mult"]:
+                stats["best_bonus"], stats["best_bonus_mult"] = bonus[0], bonus[1]
         self.audio.play("boo" if failed else "cash" if reward > 0 else "error")
         self.songs_performed += 1
         self.rhythm_result = {"venue": venue["name"], "song": venue["song_title"], "accuracy": accuracy,
@@ -1063,6 +1455,12 @@ class Game:
         elif key in (pygame.K_RETURN, pygame.K_SPACE):
             if row == "calibrate":
                 self._start_calibration()
+            elif row == "keys":
+                self._start_rebind()
+            elif row == "keys_reset":
+                self._set_lane_keys(DEFAULT_LANE_KEYS)
+                self.audio.play("ui_confirm")
+                self._set_toast("Teclas do ritmo: " + " ".join(self.lane_labels))
             elif row == "back":
                 self._leave_settings()
             else:
@@ -1083,6 +1481,58 @@ class Game:
         self.audio.set_volume(settings["sfx_volume"] / 100)
         self.audio.play("ui_move")
         self._save_rhythm_settings()
+
+    # ---- teclas das pistas
+    @property
+    def lane_codes(self):
+        return lane_key_codes(self.rhythm_settings["lane_keys"]) or lane_key_codes(DEFAULT_LANE_KEYS)
+
+    @property
+    def lane_labels(self):
+        return [self._key_label(code) for code in self.lane_codes]
+
+    @staticmethod
+    def _key_label(code):
+        name = pygame.key.name(code)
+        short = {"left": "←", "right": "→", "up": "↑", "down": "↓", "space": "ESP", "left shift": "SHFT",
+                 "right shift": "SHFT", "tab": "TAB"}
+        return short.get(name, name.upper())[:4]
+
+    def _set_lane_keys(self, names):
+        """Troca as teclas das pistas (nomes do pygame) e salva; ignora combinações inválidas."""
+        if lane_key_codes(names) is None:
+            return False
+        self.rhythm_settings = dict(self.rhythm_settings, lane_keys=[str(name) for name in names])
+        self._save_rhythm_settings()
+        return True
+
+    def _start_rebind(self):
+        self.audio.play("ui_confirm")
+        self.rebind = {"slot": 0, "keys": list(self.rhythm_settings["lane_keys"])}
+        self.state = "rebind"
+
+    def _handle_rebind_key(self, key):
+        rebind = self.rebind
+        if key == pygame.K_ESCAPE:
+            self.audio.play("ui_back")
+            self.state = "settings"
+            return
+        name = pygame.key.name(key)
+        if not name or key in RESERVED_KEYS:
+            self.audio.play("error")
+            self._set_toast("Essa tecla tem outra função. Escolha outra.")
+            return
+        keys, slot = rebind["keys"], rebind["slot"]
+        if name in keys and keys.index(name) != slot:  # tecla já usada em outra pista: as duas trocam de lugar
+            keys[keys.index(name)] = keys[slot]
+        keys[slot] = name
+        self.audio.play("ui_confirm")
+        if slot >= 3:
+            self._set_lane_keys(keys)
+            self._set_toast("Teclas do ritmo: " + " ".join(self.lane_labels))
+            self.state = "settings"
+        else:
+            rebind["slot"] = slot + 1
 
     def _save_rhythm_settings(self):
         try:
@@ -1145,7 +1595,7 @@ class Game:
                 self.audio.play("success")
                 self.state = "settings"
             return
-        if key in (pygame.K_SPACE, pygame.K_d, pygame.K_f, pygame.K_j, pygame.K_k):
+        if key == pygame.K_SPACE or key in self.lane_codes:
             calibration["taps"].append(self.clock_fn())
             calibration["flash"] = self.clock_fn()
 
@@ -1211,6 +1661,10 @@ class Game:
         once("nothing_left", not self._venues_left_today() and self.clock_minutes < LATE_HOUR,
              "Nenhum palco disponível pelo resto do dia. Vá dormir em casa para começar o próximo (siga a seta).",
              "info")
+        once("pay", not self.agiota_dead and not self.paid_next and self.money >= self._next_payment()
+             and self.clock_minutes >= 20 * 60,
+             f"Você já tem os {ui.money(self._next_payment())} da cobrança: aperte B para pagar antes de dormir "
+             "(ou não pague e encare o agiota).", "info")
         once("late", self.clock_minutes >= LATE_HOUR,
              "22:00: assaltantes começam a rondar a cidade! Vá para casa (siga a seta) ou ande de Fusca.", "warn")
         once("very_late", self.clock_minutes >= 25 * 60,
@@ -1231,6 +1685,8 @@ class Game:
             "clock_minutes": round(self.clock_minutes), "tired_day": self.tired_day,
             "rested_day": self.rested_day, "shows_today": dict(self.shows_today),
             "car": [round(self.car.position.x), round(self.car.position.y), round(self.car.heading)] if self.car else None,
+            "paid_next": self.paid_next, "agiota_dead": self.agiota_dead, "stats": dict(self.stats),
+            "cheat_money": self.cheat_money, "money_before_cheat": self.money_before_cheat,
         })
 
     def _load_saved_game(self):
@@ -1260,7 +1716,19 @@ class Game:
                 self.car = Car((car[0], car[1]), heading=car[2])
             else:
                 self._spawn_car_near_shop()
+        self.paid_next = bool(data.get("paid_next", False))
+        self.agiota_dead = bool(data.get("agiota_dead", False))
+        self.cheat_money = bool(data.get("cheat_money", False))
+        before = data.get("money_before_cheat", 0)
+        self.money_before_cheat = before if isinstance(before, int) else 0
+        saved_stats = data.get("stats")
+        if isinstance(saved_stats, dict):
+            for key, default in new_stats().items():
+                value = saved_stats.get(key, default)
+                if isinstance(value, type(default)) or (isinstance(default, float) and isinstance(value, int)):
+                    self.stats[key] = value
         self.player.reset_position(tuple(int(v) for v in data["player_position"]))
+        self._rescue_from_walls()
         self.camera.update(self.player)
         self._refresh_shop_stock()
         self._set_toast(f"Jogo carregado: dia {self.day}.")
@@ -1276,11 +1744,14 @@ class Game:
     # ------------------------------------------------------------------
     # Fim de jogo e ranking
     # ------------------------------------------------------------------
-    def _finish_game(self, result, reason):
+    def _finish_game(self, result, reason, ending=None):
+        self.end_ending = ending or ("trem" if result == "vitória" else "pego")
+        self.stats["days"] = self.day
         self.victory_bonus = 0
         if result == "vitória":
             # Escapar mais cedo e com mais dinheiro rende mais pontos.
-            self.victory_bonus = 300 + max(0, 30 - self.day) * 20 + max(0, self.money) // 10
+            money_bonus = 0 if self.stats.get("cheat") else max(0, self.money) // 10  # dinheiro do código não vale
+            self.victory_bonus = 300 + max(0, 30 - self.day) * 20 + money_bonus
             self.score += self.victory_bonus
         savegame.delete_save()
         self.has_save = False
@@ -1288,6 +1759,7 @@ class Game:
         self.end_result = result
         self.end_reason = reason
         self.result_saved = False
+        self.last_rank_id = self.last_rank_position = None
         self.player_name = ""
         self.state = "end_name"
         logging.info("Fim de jogo: %s - %s; score=%s", result, reason, self.score)
@@ -1295,21 +1767,27 @@ class Game:
     def _after_name_entry(self):
         self.rank_return_state = "menu"
         self.ranking_filter = None
+        self.ranking_index = max(0, min(9, (self.last_rank_position or 1) - 1)) if self.result_saved else 0
         self.menu_options = self._build_menu()
         self.menu_index = 0
         self.state = "ranking"
 
     def _handle_name_entry(self, event):
         if event.key == pygame.K_RETURN:
-            saved = self.ranking.save(
+            entry = self.ranking.save(
                 self.player_name or "Jogador",
                 self.score,
                 self.day,
                 self.difficulty,
                 self.end_result or "fim",
+                ending=self.end_ending or "",
+                stats=self.stats,
             )
+            saved = bool(entry)
             if saved:
-                logging.info("Pontuação salva no ranking")
+                self.last_rank_id = entry
+                self.last_rank_position = self.ranking.position(entry)
+                logging.info("Pontuação salva no ranking (posição %s)", self.last_rank_position)
             else:
                 self._set_toast("Não foi possível salvar no ranking (erro no banco de dados).", seconds=4)
             self.result_saved = saved
@@ -1327,13 +1805,25 @@ class Game:
     # ------------------------------------------------------------------
     def draw(self, screen):
         self.buttons = []
-        screen.fill((38, 43, 45))
+        world = self._world_surface()
+        world.fill((38, 43, 45))
         self.camera.update(self.player)
-        self.tiled_map.draw(screen, self.camera)
-        self._draw_characters(screen)
+        self.tiled_map.draw(world, self.camera)
+        for trap in self.traps:
+            trap.draw(world, self.camera)
+        self._draw_characters(world)
+        for bullet in self.bullets:
+            bullet.draw(world, self.camera)
+        self._draw_world_sparks(world)
+        self.zoom = screen.get_width() / world.get_width()
+        pygame.transform.scale(world, screen.get_size(), screen)  # vizinho mais próximo: pixel art nítida
         self._draw_daylight(screen)
         self._draw_zones(screen)
         self._draw_stun_bar(screen)
+        if self.state in ("playing", "chase"):
+            self._draw_banner(screen)
+            if self._armed() and not self.driving:
+                self._draw_crosshair(screen)
 
         if self.state == "menu":
             self._draw_menu(screen)
@@ -1343,6 +1833,8 @@ class Game:
             self._draw_settings(screen)
         elif self.state == "calibrate":
             self._draw_calibration(screen)
+        elif self.state == "rebind":
+            self._draw_rebind(screen)
         elif self.state == "playing":
             self._draw_hud(screen)
             self._draw_home_arrow(screen)
@@ -1373,6 +1865,51 @@ class Game:
         if self.toast_timer > 0 and self.state in ("menu", "settings", "playing", "shop", "sleep_confirm", "chase"):
             self._draw_toast(screen)
 
+    def _world_surface(self):
+        if self._world is None:
+            self._world = pygame.Surface(VIEW_SIZE)
+            if pygame.display.get_surface() is not None:
+                self._world = self._world.convert()
+        return self._world
+
+    def _to_screen(self, world_pos):
+        """Posição do mundo -> pixel da janela (com o zoom da câmera)."""
+        zoom = getattr(self, "zoom", 1280 / VIEW_SIZE[0])
+        return ((world_pos[0] - self.camera.x) * zoom, (world_pos[1] - self.camera.y) * zoom)
+
+    def _draw_banner(self, screen):
+        banner = self.banner
+        if not banner:
+            return
+        if banner["age"] > 3.2:
+            return
+        grow = min(1.0, banner["age"] / 0.25)
+        fade = min(1.0, (3.2 - banner["age"]) / 0.6)
+        image = self.font_combo.render(banner["text"], True, ui.GOLD)
+        shadow = self.font_combo.render(banner["text"], True, (20, 12, 8))
+        if grow < 1:
+            size = (max(1, round(image.get_width() * (0.6 + 0.4 * grow))), max(1, round(image.get_height() * (0.6 + 0.4 * grow))))
+            image, shadow = pygame.transform.smoothscale(image, size), pygame.transform.smoothscale(shadow, size)
+        image.set_alpha(round(255 * fade))
+        shadow.set_alpha(round(200 * fade))
+        rect = image.get_rect(center=(screen.get_width() // 2, 250))
+        screen.blit(shadow, rect.move(3, 4))
+        screen.blit(image, rect)
+
+    def _draw_crosshair(self, screen):
+        x, y = self.mouse_pos
+        if not (0 <= x < screen.get_width() and 0 <= y < screen.get_height()):
+            return
+        color = (255, 120, 100) if self.shot_cooldown <= 0 else (150, 150, 150)
+        pygame.draw.circle(screen, color, (x, y), 11, 2)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            pygame.draw.line(screen, color, (x + dx * 6, y + dy * 6), (x + dx * 16, y + dy * 16), 2)
+
+    def _draw_world_sparks(self, world):
+        for x, y, _, _, age, life, color in self.world_sparks:
+            size = max(1, round(3 * (1 - age / life)))
+            pygame.draw.circle(world, color, (round(x - self.camera.x), round(y - self.camera.y)), size)
+
     def _daylight(self):
         """Cor e opacidade do "céu" sobre o mapa conforme a hora (pôr do sol, noite, amanhecer)."""
         hour = self.clock_minutes / 60
@@ -1399,8 +1936,7 @@ class Game:
     def _draw_zones(self, screen):
         night = self._daylight()[3] > 80
         for zone in ZONES:
-            x = round(zone["position"][0] - self.camera.x)
-            y = round(zone["position"][1] - self.camera.y)
+            x, y = (round(v) for v in self._to_screen(zone["position"]))
             if x < -160 or x > screen.get_width() + 160 or y < -70 or y > screen.get_height() + 70:
                 continue
             status = self._venue_status(zone["id"]) if zone["id"] in VENUES else None
@@ -1432,7 +1968,16 @@ class Game:
     def _draw_player(self, screen, camera):
         pygame.draw.ellipse(screen, (24, 28, 30), self.camera.apply(pygame.Rect(
             self.player.hitbox.centerx - 12, self.player.hitbox.bottom - 5, 24, 9)))
+        if self._armed() and self.aim.y < 0:  # mirando para cima: a arma fica atrás do corpo
+            self._draw_gun(screen, camera)
         screen.blit(self.player.image, camera.apply(self.player.rect))
+        if self._armed() and self.aim.y >= 0:
+            self._draw_gun(screen, camera)
+
+    def _draw_gun(self, screen, camera):
+        origin = self._gun_origin()
+        hand = (origin.x - camera.x + self.aim.x * 7, origin.y - camera.y + self.aim.y * 4)
+        draw_revolver(screen, hand, self.aim)
 
     def _draw_characters(self, screen):
         """Desenha jogador, moradores e agiota ordenados pela altura dos pés (profundidade)."""
@@ -1440,7 +1985,9 @@ class Game:
         drawables = [] if self.driving else [(self.player.hitbox.bottom, self._draw_player)]
         if self.car is not None:
             drawables.append((self.car.sort_y, self.car.draw))
-        for walker in self.npcs + self.hunters + self.muggers:
+        for body in self.fallen:
+            drawables.append((body.sort_y, body.draw))
+        for walker in self.npcs + self.hunters + self.muggers + self.fleeing:
             x = walker.position.x - self.camera.x
             y = walker.position.y - self.camera.y
             if -60 <= x <= width + 60 and -80 <= y <= height + 80:
@@ -1451,7 +1998,7 @@ class Game:
     def _draw_edge_arrow(self, screen, world_pos, color, label=None, on_screen=True):
         """Seta na borda da tela apontando para algo fora de vista (agiota, casa...)."""
         width, height = screen.get_width(), screen.get_height()
-        x, y = world_pos[0] - self.camera.x, world_pos[1] - self.camera.y
+        x, y = self._to_screen(world_pos)
         if 0 <= x <= width and 0 <= y <= height:
             if not on_screen:
                 return
@@ -1486,14 +2033,13 @@ class Game:
         player = self.player
         if player.stunned_timer <= 0 or not player.stun_duration:
             return
-        x = player.rect.centerx - self.camera.x
-        top = player.rect.top - self.camera.y
+        x, top = self._to_screen((player.rect.centerx, player.rect.top))
         ratio = player.stunned_timer / player.stun_duration
         bar = pygame.Rect(0, 0, 58, 9)
         bar.midbottom = (x, top - 6)
         ui.panel(screen, bar.inflate(6, 6), fill=(14, 19, 24, 230), border=None, radius=6)
         ui.bar(screen, bar, ratio, (255, 200, 90), back=(60, 50, 40))
-        ui.text(screen, f"ATORDOADO {player.stunned_timer:0.1f}s", self.font_label, (255, 214, 120),
+        ui.text(screen, f"{self.stun_label} {player.stunned_timer:0.1f}s", self.font_label, (255, 214, 120),
                 shadow=True, midbottom=(x, bar.y - 4))
         spin = self.clock_fn() * 6
         for k in range(3):  # estrelinhas girando em volta da cabeça
@@ -1562,19 +2108,10 @@ class Game:
         ui.coin(screen, (card.x + 30, card.y + 44))
         ui.text(screen, ui.money(self.money), self.font_big_number, ui.GREEN, midleft=(card.x + 50, card.y + 44))
         ui.text(screen, "DÍVIDA COM O AGIOTA", self.font_label, ui.MUTED, topleft=(card.x + 18, card.y + 68))
-        ui.text(screen, ui.money(self.debt), self.font, (255, 160, 140), topright=(card.right - 18, card.y + 66))
+        ui.text(screen, "acabou" if self.agiota_dead else ui.money(self.debt), self.font,
+                ui.GREEN if self.agiota_dead else (255, 160, 140), topright=(card.right - 18, card.y + 66))
 
-        # Próxima cobrança
-        next_payment = math.ceil(self.daily_payment * 1.5)
-        covered = self.money >= next_payment
-        card = ui.panel(screen, (662, 10, 290, 104), border=ui.GREEN if covered else (200, 90, 80))
-        ui.text(screen, f"COBRANÇA DO DIA {self.day + 1}", self.font_label, ui.MUTED, topleft=(card.x + 18, card.y + 10))
-        ui.text(screen, ui.money(next_payment), self.font_big_number, ORANGE_TEXT, midleft=(card.x + 18, card.y + 44))
-        status = "Garantida" if covered else f"Faltam {ui.money(next_payment - self.money)}"
-        ui.text(screen, status, self.font_small, ui.GREEN if covered else ui.RED, midright=(card.right - 18, card.y + 44))
-        ui.bar(screen, (card.x + 18, card.y + 72, card.width - 36, 8), self.money / max(1, next_payment),
-               ui.GREEN if covered else (230, 110, 90))
-        ui.text(screen, "paga ao dormir ou às 03:00", self.font_label, ui.MUTED, midtop=(card.centerx, card.y + 83))
+        self._draw_charge_card(screen)
 
         # Progresso
         card = ui.panel(screen, (962, 10, 306, 104))
@@ -1590,8 +2127,12 @@ class Game:
         ui.text(screen, "Se faltar", self.font_small, ui.MUTED, topleft=(card.x + 18, card.y + 76))
         next_henchmen = HENCHMEN_PER_MISS * self.missed_payments
         threat = "agiota" if not next_henchmen else f"agiota + {next_henchmen} capangas"
-        ui.text(screen, threat, self.font_small, (255, 140, 120) if next_henchmen else ui.INK,
-                topright=(card.right - 18, card.y + 76))
+        if self.agiota_dead:
+            threat = "ninguém"
+        elif self.paid_next:
+            threat = "ninguém (paga)"
+        ui.text(screen, threat, self.font_small, (255, 140, 120) if next_henchmen and threat.startswith("agiota")
+                else ui.INK, topright=(card.right - 18, card.y + 76))
 
         # Etiquetas de estado
         x = 12
@@ -1611,6 +2152,40 @@ class Game:
         for label, color in chips:
             rect = ui.chip(screen, self.font_small, label, color, topleft=(x, 122))
             x = rect.right + 8
+
+    def _draw_charge_card(self, screen):
+        """Cartão da cobrança: valor, quanto falta e o botão para pagar adiantado (B)."""
+        if self.agiota_dead:
+            card = ui.panel(screen, (662, 10, 290, 104), border=ui.GREEN)
+            ui.text(screen, "AGIOTA DERRUBADO", self.font_label, ui.GREEN, topleft=(card.x + 18, card.y + 10))
+            ui.text(screen, "Sem cobranças", self.font_big_number, ui.INK, midleft=(card.x + 18, card.y + 44))
+            ui.text(screen, "durma em casa para encerrar", self.font_label, ui.MUTED, midtop=(card.centerx, card.y + 76))
+            return
+        amount = self._next_payment()
+        covered = self.money >= amount
+        border = ui.GREEN if self.paid_next else (ui.GOLD if covered else (200, 90, 80))
+        card = ui.panel(screen, (662, 10, 290, 104), border=border, width=2 if covered and not self.paid_next else 1)
+        ui.text(screen, f"COBRANÇA DO DIA {self.day + 1}", self.font_label, ui.MUTED, topleft=(card.x + 18, card.y + 10))
+        ui.text(screen, ui.money(amount), self.font_big_number, ui.GREEN if self.paid_next else ORANGE_TEXT,
+                midleft=(card.x + 18, card.y + 44))
+        if self.paid_next:
+            ui.text(screen, "PAGA", self.font, ui.GREEN, midright=(card.right - 18, card.y + 44))
+            ui.text(screen, "o agiota não vem atrás de você", self.font_label, ui.MUTED,
+                    midtop=(card.centerx, card.y + 76))
+            return
+        status = "Dá para pagar" if covered else f"Faltam {ui.money(amount - self.money)}"
+        ui.text(screen, status, self.font_small, ui.GREEN if covered else ui.RED, midright=(card.right - 18, card.y + 44))
+        button = pygame.Rect(card.x + 14, card.y + 68, card.width - 28, 26)
+        if covered:
+            hovered = button.collidepoint(self.mouse_pos)
+            ui.panel(screen, button, fill=(60, 50, 20, 255) if hovered else (44, 38, 18, 255), border=ui.GOLD, radius=8)
+            ui.text(screen, "B  PAGAR AGORA", self.font_label, ui.GOLD, center=button.center)
+            if self.state in ("playing", "chase"):
+                self.buttons.append((button, self._pay_now))
+        else:
+            ui.bar(screen, (card.x + 18, card.y + 72, card.width - 36, 8), self.money / max(1, amount), (230, 110, 90))
+            ui.text(screen, "sem pagar até as 03:00, o agiota vem", self.font_label, ui.MUTED,
+                    midtop=(card.centerx, card.y + 84))
 
     def _draw_key_prompt(self, screen, title_text, detail, detail_color, border):
         title = self.font.render(title_text, True, ui.INK)
@@ -1699,26 +2274,57 @@ class Game:
             "approach": ("Velocidade das notas", f"{3.2 - s['approach']:.1f}x"),
             "audio_offset": ("Sincronia do áudio", f"{s['audio_offset']:+d} ms"),
             "calibrate": ("Calibrar sincronia automaticamente", ""),
+            "keys": ("Teclas do ritmo", "  ".join(self.lane_labels)),
+            "keys_reset": ("Restaurar teclas padrão (D F J K)", ""),
             "back": ("Voltar", ""),
         }
         for index, key in enumerate(SETTINGS_ROWS):
             label, value = rows[key]
-            y = 210 + index * 56
+            y = 200 + index * 48
             selected = index == self.settings_index
-            row = pygame.Rect(box.x + 30, y - 22, box.width - 60, 44)
+            row = pygame.Rect(box.x + 30, y - 20, box.width - 60, 40)
             if selected:
                 ui.panel(screen, row, fill=(34, 46, 56, 255), border=ui.GOLD, radius=10)
             ui.text(screen, label, self.font, ui.GOLD if selected else ui.INK, midleft=(row.x + 18, row.centery))
             if value:
-                ui.text(screen, f"<  {value}  >" if selected else value, self.font, ui.INK, midright=(row.right - 18, row.centery))
+                ui.text(screen, f"<  {value}  >" if selected and key not in ("keys",) else value, self.font, ui.INK, midright=(row.right - 18, row.centery))
             self.buttons.append((row, lambda i=index: self._click_setting(i)))
         hint = "Se as notas parecem adiantadas ou atrasadas em relação à música, use a calibração."
-        ui.text(screen, hint, self.font_small, ui.MUTED, center=(640, 556))
-        ui.text(screen, "Setas: escolher e ajustar   |   ENTER confirmar   |   ESC voltar", self.font_small, ui.MUTED, center=(640, 590))
+        ui.text(screen, hint, self.font_small, ui.MUTED, center=(640, 580))
+        ui.text(screen, "Setas: escolher e ajustar   |   ENTER confirmar   |   ESC voltar", self.font_small, ui.MUTED, center=(640, 608))
 
     def _click_setting(self, index):
         self.settings_index = index
         self._handle_settings(pygame.K_RETURN)
+
+    def _draw_rebind(self, screen):
+        self._draw_overlay(screen, alpha=235)
+        ui.panel(screen, (290, 110, 700, 500), radius=16)
+        ui.text(screen, "TECLAS DO RITMO", self.font_title, ui.GOLD, center=(640, 165))
+        rebind = self.rebind
+        done = rebind["slot"] >= 4
+        ui.text(screen, f"Aperte a tecla da pista {rebind['slot'] + 1} (da esquerda para a direita).",
+                self.font, ui.INK, center=(640, 235))
+        ui.text(screen, "Se a tecla já estiver em outra pista, as duas trocam de lugar.",
+                self.font_small, ui.MUTED, center=(640, 270))
+        colors = ((112, 203, 235), (250, 195, 104), (187, 151, 231), (124, 217, 169))
+        for slot in range(4):
+            x = 395 + slot * 170
+            rect = pygame.Rect(0, 0, 130, 150)
+            rect.center = (x, 400)
+            current = slot == rebind["slot"] and not done
+            ui.panel(screen, rect, fill=(34, 46, 56, 255) if current else (22, 30, 37, 255),
+                     border=colors[slot] if current else ui.PANEL_BORDER, radius=14, width=3 if current else 1)
+            label = self._key_label(pygame.key.key_code(rebind["keys"][slot]))
+            ui.text(screen, label, self.font_title, colors[slot] if current else ui.INK, center=(x, 392))
+            ui.text(screen, f"Pista {slot + 1}", self.font_small, ui.MUTED, center=(x, 450))
+            self.buttons.append((rect, lambda s=slot: self._select_rebind_slot(s)))
+        ui.text(screen, "Clique numa pista para refazer só ela   |   ESC cancela", self.font_small, ui.MUTED,
+                center=(640, 570))
+
+    def _select_rebind_slot(self, slot):
+        self.rebind["slot"] = slot
+        self.audio.play("ui_move")
 
     def _draw_calibration(self, screen):
         self._draw_overlay(screen, alpha=235)
@@ -1727,7 +2333,7 @@ class Game:
         calibration = self.calibration
         if not calibration["done"]:
             lines = ("Você vai ouvir batidas regulares.",
-                     "Aperte ESPAÇO (ou D F J K) junto com cada batida que ouvir.",
+                     f"Aperte ESPAÇO (ou {' '.join(self.lane_labels)}) junto com cada batida que ouvir.",
                      "Feche os olhos se quiser: o que importa é o som.")
             for index, line in enumerate(lines):
                 ui.text(screen, line, self.font, ui.INK if index == 1 else ui.MUTED, center=(640, 225 + index * 34))
@@ -1767,7 +2373,7 @@ class Game:
                 self.font_small, ui.MUTED, center=(640, 238))
         if not self.shop_stock:
             ui.text(screen, "Sem estoque hoje. Volte amanhã!", self.font, ui.INK, center=(640, 380))
-        kinds = {"roupa": "Roupa", "veiculo": "Veículo", "passagem": "Passagem"}
+        kinds = {"roupa": "Roupa", "veiculo": "Veículo", "passagem": "Passagem", "arma": "Arma"}
         for index, item_key in enumerate(self.shop_stock):
             item = ITEMS[item_key]
             selected = index == self.shop_index
@@ -1794,24 +2400,50 @@ class Game:
         self._draw_overlay(screen, alpha=165)
         box = ui.panel(screen, (320, 190, 640, 360), fill=(16, 22, 28, 245), border=(96, 114, 126), radius=18, width=2)
         ui.text(screen, "DORMIR EM CASA", self.font_title, ui.GOLD, center=(640, 240))
-        next_payment = math.ceil(self.daily_payment * 1.5)
+        if self.agiota_dead:
+            lines = [("O agiota caiu. Dormir agora encerra a história com vitória.", ui.GREEN),
+                     ("Se preferir, continue jogando: dá para tocar e somar pontos", ui.INK),
+                     ("ou fugir de trem quando quiser.", ui.INK)]
+            for index, (line, color) in enumerate(lines):
+                ui.text(screen, line, self.font_small, color, center=(640, 300 + index * 34))
+            confirm = pygame.Rect(box.x + 60, box.bottom - 90, 240, 48)
+            cancel = pygame.Rect(box.right - 300, box.bottom - 90, 240, 48)
+            self._draw_button(screen, confirm, "ENTER  Encerrar", self._confirm_sleep, ui.GREEN)
+            self._draw_button(screen, cancel, "ESC  Continuar", self._cancel_sleep, ui.BLUE)
+            return
+        amount = self._next_payment()
         early = self.clock_minutes < REST_BEFORE
+        if self.paid_next:
+            charge = (f"Cobrança de {ui.money(amount)} já paga: o agiota não vem atrás de você.", ui.GREEN)
+        elif self.money >= amount:
+            charge = (f"Cobrança de {ui.money(amount)} NÃO paga! Aperte B para pagar antes de dormir.", ORANGE_TEXT)
+        else:
+            charge = (f"Cobrança de {ui.money(amount)} não paga (faltam {ui.money(amount - self.money)}): "
+                      "o agiota vai caçar você!", ui.RED)
         lines = [
             ("O dia acaba e você acorda às 08:00 do dia " + str(self.day + 1) + ".", ui.INK),
-            (f"Ao acordar, o agiota cobra {ui.money(next_payment)}." + (" Você tem o dinheiro." if self.money >= next_payment
-             else f" Faltam {ui.money(next_payment - self.money)}!"), ui.GREEN if self.money >= next_payment else ui.RED),
+            charge,
             ("Antes da meia-noite: amanhã você acorda descansado (+10% de velocidade)." if early
              else "Já passou da meia-noite: sem bônus de descanso, mas evita o cansaço.", ui.GREEN if early else ORANGE_TEXT),
         ]
         for index, (line, color) in enumerate(lines):
             ui.text(screen, line, self.font_small, color, center=(640, 300 + index * 34))
-        confirm = pygame.Rect(box.x + 60, box.bottom - 90, 240, 48)
-        cancel = pygame.Rect(box.right - 300, box.bottom - 90, 240, 48)
+        can_pay = not self.paid_next and self.money >= amount
+        width = 176 if can_pay else 240
+        confirm = pygame.Rect(box.x + 40, box.bottom - 90, width, 48)
+        cancel = pygame.Rect(box.right - 40 - width, box.bottom - 90, width, 48)
         self._draw_button(screen, confirm, "ENTER  Dormir", self._confirm_sleep, ui.GREEN)
+        if can_pay:
+            pay = pygame.Rect(0, 0, width, 48)
+            pay.midbottom = (box.centerx, confirm.bottom)
+            self._draw_button(screen, pay, "B  Pagar", self._pay_now, ui.GOLD)
         self._draw_button(screen, cancel, "ESC  Ainda não", self._cancel_sleep, ui.RED)
 
     def _confirm_sleep(self):
         self.audio.play("ui_confirm")
+        if self.agiota_dead:
+            self._finish_game("vitória", "O agiota caiu e você enfim dormiu em paz.", ending="agiota")
+            return
         self._advance_day(slept=True)
 
     def _cancel_sleep(self):
@@ -1840,7 +2472,7 @@ class Game:
                  ("Horário", f"{opens:02d}:00 às {closes % 24:02d}:00")]
         if info["ok"]:
             lines.insert(1, ("Duração", f"{info['duration']:.0f} s  |  {info['bpm']:.0f} BPM  |  {info['notes']} notas"))
-        lines.append(("Cachê", f"até {ui.money(info['max_reward'])} (precisão) + bônus de até x3"))
+        lines.append(("Cachê", f"até {ui.money(info['max_reward'])} (precisão) + bônus de até x4"))
         for index, (label, value) in enumerate(lines):
             y = 280 + index * 40
             self._text(screen, label, self.font, (247, 203, 107), (370, y))
@@ -1905,7 +2537,7 @@ class Game:
             pygame.draw.rect(screen, (66, 82, 91), track, 1)
             pygame.draw.circle(screen, colors[lane] if lane in session.pressed else (91, 109, 119),
                                (x, target), 32, 4)
-            self._text(screen, "DFJK"[lane], self.font_large, (245, 247, 248), center=(x, 607))
+            self._text(screen, self.lane_labels[lane], self.font_large, (245, 247, 248), center=(x, 607))
         hit_age = now - session.last_judgment_at
         if session.last_judgment != "Miss" and 0 <= hit_age < 0.32:
             radius = 34 + int(hit_age * 55)
@@ -2020,10 +2652,11 @@ class Game:
             x += 108
         bonus = result.get("bonus")
         if bonus:
-            badge = pygame.Rect(0, 0, 440, 62)
+            label = f"{bonus[0].upper()}  x{bonus[1]:g} NO CACHÊ".replace(".", ",")
+            badge = pygame.Rect(0, 0, self.font_large.size(label)[0] + 48, 62)
             badge.center = (640, 418)
             ui.panel(screen, badge, fill=(40, 34, 18, 255), border=ui.GOLD, width=3, radius=16)
-            ui.text(screen, f"{bonus[0].upper()}  x{bonus[1]:g} NO CACHÊ", self.font_large, ui.GOLD, center=badge.center)
+            ui.text(screen, label, self.font_large, ui.GOLD, center=badge.center)
         if result["failed"]:
             ui.text(screen, "A energia da plateia zerou: sem cachê.", self.font_large, ORANGE_TEXT, center=(640, 500))
         else:
@@ -2031,8 +2664,11 @@ class Game:
             notes = []
             if result.get("factor", 1) < 1:
                 notes.append(f"local repetido hoje: cachê {round(result['factor'] * 100)}%")
-            if not bonus:
-                notes.append("dica: sequência de 90% da música dá x1,5; sem erros, x2; tudo Perfect, x3")
+            upgrade = next_bonus(bonus)
+            if upgrade:
+                (name, value), need = upgrade
+                notes.append(f"próximo bônus: {name} x{value:g} com {need} (até x4 com tudo Perfect)".replace(".", ",")
+                             if value < 4 else f"próximo bônus: {name} x4 com {need}")
             for index, note in enumerate(notes):
                 ui.text(screen, note, self.font_small, ui.MUTED, center=(640, 542 + index * 22))
         if result["lost_item"]:
@@ -2048,58 +2684,131 @@ class Game:
         self._text(screen, "ENTER/ESC continuar", self.font, (240, 244, 246), center=(640, 350))
         self._text(screen, "M salvar e voltar ao menu", self.font, (190, 202, 210), center=(640, 400))
 
+    def _stat_cards(self):
+        """(rótulo, valor) das estatísticas da partida para a tela final."""
+        st = self.stats
+        accuracy = f"{st['best_accuracy'] * 100:.1f}%" if st["shows"] else "-"
+        bonus = f"{st['best_bonus']} x{st['best_bonus_mult']:g}".replace(".", ",") if st["best_bonus"] else "-"
+        aim = f"{st['hits']}/{st['shots']}" if st["shots"] else "-"
+        return [("Shows", str(st["shows"])), ("Cachês", ui.money(st["earned"])), ("Melhor precisão", accuracy),
+                ("Maior combo", str(st["best_combo"])), ("Melhor bônus", bonus),
+                ("Cobranças pagas", str(st["payments"])), ("Caçadas / fugas", f"{st['chases']} / {st['escapes']}"),
+                ("Armadilhas", str(st["traps"])), ("Assaltos sofridos", str(st["robberies"])),
+                ("Tiros certos", aim)]
+
     def _draw_end_name(self, screen):
-        self._draw_overlay(screen, alpha=205)
-        box = pygame.Rect(240, 130, 800, 460)
-        self._panel(screen, box, border=(247, 203, 107))
-        title = "VOCÊ ESCAPOU!" if self.end_result == "vitória" else "FIM DE JOGO"
-        title_color = (121, 222, 157) if self.end_result == "vitória" else (255, 123, 105)
-        self._text(screen, title, self.font_title, title_color, center=(640, 205))
-        self._text(screen, self.end_reason, self.font, (235, 240, 242), center=(640, 270))
-        summary = f"Pontuação: {self.score}   |   Dias: {self.day}   |   Dificuldade: {self.difficulty}"
-        self._text(screen, summary, self.font, (247, 203, 107), center=(640, 325))
+        self._draw_overlay(screen, alpha=215)
+        win = self.end_result == "vitória"
+        box = pygame.Rect(170, 60, 940, 600)
+        self._panel(screen, box, border=ui.GOLD if win else ui.RED)
+        title = {"agiota": "O AGIOTA CAIU!", "trem": "VOCÊ ESCAPOU!"}.get(self.end_ending, "VOCÊ ESCAPOU!") \
+            if win else "FIM DE JOGO"
+        ui.text(screen, title, self.font_title, ui.GREEN if win else ui.RED, center=(640, 112))
+        ui.text(screen, self.end_reason, self.font, ui.INK, center=(640, 158))
+        ui.text(screen, f"{self.score:,}".replace(",", ".") + " pontos", self.font_combo, ui.GOLD, center=(640, 212))
+        detail = f"{self.day} dia(s)  ·  {self.difficulty}  ·  {ENDINGS.get(self.end_ending, '')}"
         if self.victory_bonus:
-            self._text(screen, f"Bônus de vitória: +{self.victory_bonus}", self.font_small,
-                       (124, 217, 169), center=(640, 355))
-        self._text(screen, "Digite seu nome para o ranking:", self.font, (235, 240, 242), center=(640, 390))
+            detail += f"  ·  bônus de vitória +{self.victory_bonus}"
+        ui.text(screen, detail, self.font_small, ui.MUTED, center=(640, 252))
+        # Estatísticas em duas fileiras de cartões.
+        for index, (label, value) in enumerate(self._stat_cards()):
+            column, row = index % 5, index // 5
+            cell = pygame.Rect(box.x + 30 + column * 178, 282 + row * 74, 166, 64)
+            ui.panel(screen, cell, fill=(24, 32, 40, 255), border=None, radius=10)
+            ui.text(screen, label.upper(), self.font_label, ui.MUTED, center=(cell.centerx, cell.y + 18))
+            ui.text(screen, value, self.font, ui.INK, center=(cell.centerx, cell.y + 43))
+        ui.text(screen, "Digite seu nome para o ranking:", self.font, ui.INK, center=(640, 470))
         name = self.player_name or "Jogador"
-        name_surface = self.font_large.render(name + "_", True, (255, 255, 255))
-        name_rect = name_surface.get_rect(center=(640, 440))
-        screen.blit(name_surface, name_rect)
-        self._text(screen, "ENTER salvar resultado  |  ESC pular", self.font_small, (190, 202, 210), center=(640, 510))
+        field = pygame.Rect(0, 0, 420, 56)
+        field.center = (640, 524)
+        ui.panel(screen, field, fill=(10, 14, 18, 255), border=ui.GOLD, radius=12, width=2)
+        cursor = "_" if int(self.clock_fn() * 2) % 2 == 0 else " "
+        ui.text(screen, name + cursor, self.font_large, (255, 255, 255), center=field.center)
+        ui.text(screen, "ENTER salvar no ranking   |   ESC pular", self.font_small, ui.MUTED, center=(640, 600))
 
     def _draw_ranking(self, screen):
-        self._draw_overlay(screen, alpha=205)
-        box = pygame.Rect(130, 45, 1020, 630)
+        self._draw_overlay(screen, alpha=215)
+        box = pygame.Rect(90, 30, 1100, 660)
         self._panel(screen, box)
-        self._text(screen, "RANKING", self.font_title, (247, 203, 107), center=(640, 95))
-        filter_name = self.ranking_filter or "Todas"
-        self._text(screen, f"Dificuldade:  <  {filter_name}  >", self.font, (235, 240, 242), center=(640, 142))
+        ui.text(screen, "RANKING", self.font_title, ui.GOLD, center=(640, 72))
+        filter_name = self.ranking_filter or "Todas as dificuldades"
+        ui.text(screen, f"<  {filter_name}  >", self.font, ui.INK, center=(640, 112))
+        if self.result_saved and self.last_rank_position:
+            ui.text(screen, f"Sua partida ficou em #{self.last_rank_position} no geral.", self.font_small, ui.GREEN,
+                    center=(640, 140))
 
-        if self.result_saved and self.end_result:
-            result_text = "Resultado salvo: " + ("vitória" if self.end_result == "vitória" else "derrota")
-            self._text(screen, result_text, self.font_small, (210, 226, 230), center=(640, 172))
+        # Recordes do filtro.
+        records = self.ranking.records(self.ranking_filter)
+        if not isinstance(records, dict):
+            records = {}
+        def record(key, fmt):
+            value = records.get(key)
+            return (fmt(value[1]), value[0]) if value else ("-", "")
+        cards = [("Partidas", (str(records.get("games", 0)), f"{records.get('wins', 0)} vitória(s)")),
+                 ("Maior pontuação", record("score", lambda v: f"{v:,}".replace(",", "."))),
+                 ("Melhor precisão", record("accuracy", lambda v: f"{v * 100:.1f}%")),
+                 ("Maior combo", record("combo", str)),
+                 ("Mais dias", record("days", str))]
+        for index, (label, (value, owner)) in enumerate(cards):
+            cell = pygame.Rect(box.x + 24 + index * 212, 158, 200, 74)
+            ui.panel(screen, cell, fill=(24, 32, 40, 255), border=None, radius=10)
+            ui.text(screen, label.upper(), self.font_label, ui.MUTED, center=(cell.centerx, cell.y + 15))
+            ui.text(screen, value, self.font, ui.GOLD, center=(cell.centerx, cell.y + 40))
+            ui.text(screen, owner[:18], self.font_label, ui.INK, center=(cell.centerx, cell.y + 61))
 
         rows = self.ranking.top(10, self.ranking_filter)
-        columns = [(160, "#"), (205, "Nome"), (430, "Pontos"), (540, "Dias"), (620, "Dificuldade"),
-                   (760, "Resultado"), (890, "Data")]
+        rows = rows if isinstance(rows, list) else []
+        columns = [(118, "#"), (152, "Nome"), (330, "Pontos"), (440, "Final"), (628, "Dias"), (690, "Shows"),
+                   (768, "Precisão"), (868, "Combo"), (948, "Dificuldade"), (1070, "Data")]
         for x, label in columns:
-            self._text(screen, label, self.font_small, (185, 202, 210), (x, 200))
-
+            ui.text(screen, label.upper(), self.font_label, ui.MUTED, topleft=(x, 246))
         if not rows:
-            self._text(screen, "Ainda não há pontuações salvas.", self.font, (235, 240, 242), center=(640, 330))
-        else:
-            for index, row in enumerate(rows):
-                name, score, days, difficulty, result, created = row
-                y = 235 + index * 36
-                color = (247, 203, 107) if index == 0 else (229, 235, 238)
-                values = [str(index + 1), name[:16], str(score), str(days), difficulty,
-                          result.title(), str(created)[:16]]
-                for (x, _), value in zip(columns, values):
-                    self._text(screen, value, self.font_small, color, (x, y))
+            ui.text(screen, "Ainda não há partidas salvas. Jogue uma!", self.font, ui.INK, center=(640, 400))
+        self.ranking_index = min(self.ranking_index, max(0, len(rows) - 1))
+        medals = {0: ui.GOLD, 1: (200, 210, 220), 2: (214, 150, 90)}
+        for index, row in enumerate(rows):
+            y = 268 + index * 32
+            line = pygame.Rect(box.x + 16, y - 2, box.width - 32, 30)
+            mine = row.get("id") == self.last_rank_id and self.result_saved
+            if index == self.ranking_index:
+                ui.panel(screen, line, fill=(34, 46, 56, 255), border=ui.GOLD, radius=8)
+            elif mine:
+                ui.panel(screen, line, fill=(26, 44, 36, 255), border=ui.GREEN, radius=8)
+            self.buttons.append((line, lambda i=index: self._select_ranking_row(i)))
+            color = ui.GREEN if mine else ui.INK
+            win = row.get("resultado") == "vitória"
+            ending = ENDINGS.get(row.get("final"), row.get("resultado", "").title())
+            values = [str(index + 1), (row.get("nome") or "")[:14] + ("  (você)" if mine else ""),
+                      f"{row.get('pontuacao', 0):,}".replace(",", "."), ending, str(row.get("dias", 0)),
+                      str(row.get("shows", 0)), f"{row.get('precisao', 0) * 100:.1f}%", str(row.get("combo", 0)),
+                      row.get("dificuldade", ""), self._short_date(row.get("criado_em", ""))]
+            for (x, _), value in zip(columns, values):
+                tint = color
+                if x == 118:
+                    tint = medals.get(index, ui.MUTED)
+                elif x == 440:
+                    tint = ui.GREEN if win else ui.RED
+                ui.text(screen, value, self.font_small, tint, topleft=(x, y + 3))
+        # Detalhes da linha selecionada.
+        if rows:
+            row = rows[self.ranking_index]
+            detail = (f"{row.get('nome', '')}:  cachês {ui.money(row.get('ganho', 0))}  ·  melhor bônus "
+                      f"{row.get('bonus') or '-'}  ·  cobranças pagas {row.get('pagamentos', 0)}  ·  fugas "
+                      f"{row.get('fugas', 0)}  ·  armadilhas {row.get('armadilhas', 0)}  ·  capangas "
+                      f"{row.get('capangas', 0)}  ·  tiros {row.get('acertos', 0)}/{row.get('tiros', 0)}")
+            ui.text(screen, detail, self.font_label, ui.INK, center=(640, 600))
+        ui.text(screen, "Setas laterais: dificuldade   |   cima/baixo: detalhes   |   ENTER ou ESC: voltar",
+                self.font_small, ui.MUTED, center=(640, 650))
 
-        self._text(screen, "Setas laterais: filtrar por dificuldade   |   ENTER ou ESC: voltar", self.font_small,
-                   (190, 202, 210), center=(640, 640))
+    @staticmethod
+    def _short_date(created):
+        """'2026-11-18 20:10:03' -> '18/11'."""
+        parts = str(created)[:10].split("-")
+        return f"{parts[2]}/{parts[1]}" if len(parts) == 3 else ""
+
+    def _select_ranking_row(self, index):
+        self.ranking_index = index
+        self.audio.play("ui_move")
 
     def _draw_toast(self, screen):
         colors = {"info": ui.BLUE, "good": ui.GREEN, "bad": ui.RED, "warn": ORANGE_TEXT}

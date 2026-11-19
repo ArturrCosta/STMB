@@ -19,6 +19,10 @@ class TiledMap:
         self.grass_tiles = set()
         self.ground_tiles = set()
         self._read_collision_data()
+        # Só dá para andar na grama e no asfalto: todo o resto do mapa (o "vazio" que os PNGs dos
+        # prédios não cobrem) vira parede para o jogador, o Fusca e os NPCs.
+        self.void_rects = self._build_void_rects()
+        self.solid_rects.extend(self.void_rects)
         self._surface = None  # mapa inteiro pré-renderizado (criado sob demanda)
 
     def _tile_object_rect(self, obj, tile, rotated_tile=None):
@@ -88,6 +92,33 @@ class TiledMap:
                     tile = self.tmx_data.get_tile_image_by_gid(obj.gid)
                     if tile:
                         self.solid_rects.append(self._tile_object_rect(obj, tile))
+
+    def _build_void_rects(self):
+        """Células sem chão (rua/grama) agrupadas no menor número possível de retângulos."""
+        if not self.ground_tiles:
+            return []
+        cols, rows = self.tmx_data.width, self.tmx_data.height
+        runs = {}  # (início, fim) da faixa de colunas -> {"top": linha inicial, "rows": quantidade}
+        finished = []
+        for row in range(rows):
+            spans, col = [], 0
+            while col < cols:
+                if (col, row) in self.ground_tiles:
+                    col += 1
+                    continue
+                start = col
+                while col < cols and (col, row) not in self.ground_tiles:
+                    col += 1
+                spans.append((start, col))
+            current = {}
+            for span in spans:  # faixa igual à da linha de cima: continua o mesmo retângulo
+                current[span] = runs.pop(span, {"top": row})
+            finished.extend((span, info["top"], row) for span, info in runs.items())
+            runs = current
+        finished.extend((span, info["top"], rows) for span, info in runs.items())
+        tw, th = self.tile_width, self.tile_height
+        return [pygame.Rect(a * tw, top * th, (b - a) * tw, (bottom - top) * th)
+                for (a, b), top, bottom in finished]
 
     def is_grass_at(self, position):
         tile_x = int(position[0] // self.tile_width)

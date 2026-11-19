@@ -26,17 +26,50 @@ CROWD_DELTA = {"Perfect": 2.0, "Great": 1.5, "Good": 0.8, "OK": 0.0, "Meh": -2.5
 # Multiplicador de pontos pelo combo atual: (combo mínimo, multiplicador).
 MULTIPLIER_STEPS = ((100, 4), (50, 3), (25, 2), (0, 1))
 COMBO_MILESTONES = (25, 50, 75, 100, 150, 200, 300)
-# Bônus no cachê ao fim da música (vale o maior): (nome, multiplicador).
-BONUS_GOLD = ("Sequência de ouro", 1.5)   # combo máximo >= 90% das notas
-BONUS_FULL = ("Sem erros!", 2.0)          # nenhum Miss
-BONUS_PERFECT = ("PERFEITO!", 3.0)        # tudo Perfect
+# Bônus no cachê ao fim da música (vale o maior): (nome, multiplicador). A escada valoriza
+# chegar perto da perfeição: cada degrau a mais de precisão paga bem mais que o anterior.
+BONUS_TUNED = ("Afinado", 1.4)                 # precisão >= 90%
+BONUS_GOLD = ("Sequência de ouro", 1.8)        # combo máximo >= 90% das notas
+BONUS_NEAR = ("Quase perfeito", 2.2)           # precisão >= 95%
+BONUS_FULL = ("Sem erros!", 2.6)               # nenhum Miss
+BONUS_FLAWLESS = ("Impecável", 3.2)            # nenhum Miss e precisão >= 97%
+BONUS_PERFECT = ("PERFEITO!", 4.0)             # tudo Perfect
+# Degraus em ordem crescente, com o que é preciso para cada um (mostrado no resultado).
+BONUS_LADDER = ((BONUS_TUNED, "90% de precisão"), (BONUS_GOLD, "combo de 90% da música"),
+                (BONUS_NEAR, "95% de precisão"), (BONUS_FULL, "nenhum Miss"),
+                (BONUS_FLAWLESS, "nenhum Miss e 97% de precisão"), (BONUS_PERFECT, "tudo Perfect"))
+
+
+def next_bonus(current):
+    """Próximo degrau acima de `current` (ou o primeiro, se None): ((nome, mult), requisito) ou None."""
+    value = current[1] if current else 0
+    return next(((bonus, need) for bonus, need in BONUS_LADDER if bonus[1] > value), None)
 # Correção do relógio pela posição real da música (pygame.mixer.music.get_pos).
 SYNC_DEADZONE = 0.012
 SYNC_STEP = 0.004
 SYNC_LIMIT = 0.25
 SETTINGS_PATH = Path("data/rhythm_settings.json")
 SETTINGS_VERSION = 2
-DEFAULT_SETTINGS = {"approach": 2.0, "volume": 70, "sfx_volume": 70, "audio_offset": 0, "input_offset": 0}
+# Teclas das 4 pistas (nomes do pygame.key.name), da esquerda para a direita. O jogador pode trocá-las em Ajustes.
+DEFAULT_LANE_KEYS = ("d", "f", "j", "k")
+DEFAULT_SETTINGS = {"approach": 2.0, "volume": 70, "sfx_volume": 70, "audio_offset": 0, "input_offset": 0,
+                    "lane_keys": list(DEFAULT_LANE_KEYS)}
+
+
+def lane_key_codes(names):
+    """Códigos do pygame para os nomes das 4 pistas; None se algum nome for inválido ou repetido."""
+    try:
+        codes = tuple(pygame.key.key_code(str(name)) for name in names)
+    except (ValueError, TypeError, pygame.error):
+        return None
+    return codes if len(codes) == 4 and len(set(codes)) == 4 else None
+
+
+def valid_lane_keys(names):
+    """Lista de 4 nomes de teclas válida (e sem repetição) ou o padrão D F J K."""
+    if isinstance(names, (list, tuple)) and lane_key_codes(names) is not None:
+        return [str(name) for name in names]
+    return list(DEFAULT_LANE_KEYS)
 
 
 def load_settings(path=SETTINGS_PATH):
@@ -44,14 +77,16 @@ def load_settings(path=SETTINGS_PATH):
     try:
         saved = json.loads(Path(path).read_text(encoding="utf-8"))
         for name in settings:
-            if name in saved and isinstance(saved[name], (int, float)):
+            if name != "lane_keys" and name in saved and isinstance(saved[name], (int, float)):
                 settings[name] = saved[name]
+        settings["lane_keys"] = saved.get("lane_keys", settings["lane_keys"])
         if saved.get("version") != SETTINGS_VERSION:
             # Ajustes de sincronia antigos (de antes da calibração automática) deixavam as
             # notas fora do tempo; voltam ao padrão e o jogador pode calibrar em Ajustes.
             settings["audio_offset"] = settings["input_offset"] = 0
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
+    settings["lane_keys"] = valid_lane_keys(settings["lane_keys"])
     settings["approach"] = max(1.0, min(3.0, float(settings["approach"])))
     settings["volume"] = max(0, min(100, int(settings["volume"])))
     settings["sfx_volume"] = max(0, min(100, int(settings["sfx_volume"])))
@@ -213,13 +248,16 @@ class RhythmSession:
         """Maior bônus conquistado na música (nome, multiplicador do cachê) ou None."""
         if not self.judged:
             return None
-        if self.counts["Perfect"] == self.judged:
-            return BONUS_PERFECT
-        if self.counts["Miss"] == 0:
-            return BONUS_FULL
-        if self.max_combo >= 0.9 * self.total:
-            return BONUS_GOLD
-        return None
+        accuracy, no_miss = self.accuracy, self.counts["Miss"] == 0
+        earned = [bonus for bonus, ok in (
+            (BONUS_PERFECT, self.counts["Perfect"] == self.judged),
+            (BONUS_FLAWLESS, no_miss and accuracy >= 0.97),
+            (BONUS_FULL, no_miss),
+            (BONUS_NEAR, accuracy >= 0.95),
+            (BONUS_GOLD, self.max_combo >= 0.9 * self.total),
+            (BONUS_TUNED, accuracy >= 0.90),
+        ) if ok]
+        return max(earned, key=lambda bonus: bonus[1]) if earned else None
 
     def sync_to_audio(self, audio_seconds):
         """Puxa o relógio aos poucos para a posição real da música, evitando que deslize."""

@@ -90,7 +90,7 @@ class Player(pygame.sprite.Sprite):
         self.hitbox = pygame.Rect(0, 0, 18, 14)
         self._sync_hitbox()
 
-        self.base_speed = 300  # pixels por segundo
+        self.base_speed = 225  # pixels por segundo
         self.tired = False
         self.rested = False
         self.stunned_timer = 0.0

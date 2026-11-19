@@ -7,11 +7,12 @@ from pathlib import Path
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-from rhythm import RhythmSession, judgment, load_beatmap, load_settings, reward_for, save_settings
+from rhythm import RhythmSession, judgment, load_beatmap, load_settings, next_bonus, reward_for, save_settings
 
 
 BEATMAP = Path(__file__).resolve().parents[1] / "assets/music/cidade_em_pulso.json"
-SETTINGS = {"approach": 2.0, "volume": 70, "sfx_volume": 70, "audio_offset": 0, "input_offset": 0}
+SETTINGS = {"approach": 2.0, "volume": 70, "sfx_volume": 70, "audio_offset": 0, "input_offset": 0,
+            "lane_keys": ["d", "f", "j", "k"]}
 
 
 class RhythmTests(unittest.TestCase):
@@ -105,7 +106,7 @@ class RhythmTests(unittest.TestCase):
         self.assertIn(("multiplier", 3), s.events)
         self.assertGreater(s.score, s.base_score)
         self.assertEqual(s.accuracy, 1.0)
-        self.assertEqual(s.bonus()[1], 3.0)
+        self.assertEqual(s.bonus()[1], 4.0)
 
     def test_bonus_levels(self):
         notes = [{"lane": i % 4, "time": 1 + i * 0.3, "duration": 0, "head": None, "tail": None} for i in range(20)]
@@ -114,7 +115,39 @@ class RhythmTests(unittest.TestCase):
             self.now = note["time"] + (0.07 if i == 3 else 0)  # um Great, nenhum erro
             s.key_down(note["lane"])
             s.key_up(note["lane"])
-        self.assertEqual(s.bonus()[1], 2.0)
+        self.assertEqual(s.bonus()[0], "Impecável")
+        self.assertEqual(s.bonus()[1], 3.2)
+
+    def test_next_bonus_step(self):
+        self.assertEqual(next_bonus(None)[0][0], "Afinado")
+        self.assertEqual(next_bonus(("Quase perfeito", 2.2))[0][1], 2.6)
+        self.assertIsNone(next_bonus(("PERFEITO!", 4.0)))
+
+    def test_bonus_ladder_rewards_near_perfection(self):
+        notes = [{"lane": i % 4, "time": 1 + i * 0.3, "duration": 0, "head": None, "tail": None} for i in range(40)]
+
+        def play(offsets, skip=()):
+            s = self.make_session([dict(note) for note in notes], duration=20)
+            fresh = s.map["notes"]
+            for i, note in enumerate(notes):
+                if i in skip:
+                    continue
+                self.now = fresh[i]["time"] + offsets(i)
+                s.key_down(fresh[i]["lane"])
+                s.key_up(fresh[i]["lane"])
+                s.update()  # no jogo roda a cada quadro: notas puladas viram Miss na hora
+            self.now = notes[-1]["time"] + 2
+            s.update()
+            return s
+
+        all_great = play(lambda i: 0.07)                       # 93,75% de precisão, sem erros
+        self.assertEqual(all_great.bonus()[0], "Sem erros!")
+        near = play(lambda i: 0.0, skip={10})                   # um Miss no meio, resto Perfect
+        self.assertGreaterEqual(near.accuracy, 0.95)
+        self.assertEqual(near.bonus()[0], "Quase perfeito")
+        sloppy = play(lambda i: 0.0 if i % 3 else 0.11, skip={5, 20, 35})  # vários Good e 3 Miss
+        self.assertLess(sloppy.accuracy, 0.90)
+        self.assertIsNone(sloppy.bonus())
 
     def test_audio_sync_nudges_the_clock(self):
         s = self.make_session([{"lane": 0, "time": 5, "duration": 0, "head": None, "tail": None}])
@@ -134,6 +167,13 @@ class RhythmTests(unittest.TestCase):
             settings_path.write_text(json.dumps({"volume": 40, "audio_offset": 100, "input_offset": 100}))
             old = load_settings(settings_path)
             self.assertEqual((old["volume"], old["audio_offset"], old["input_offset"]), (40, 0, 0))
+            self.assertEqual(old["lane_keys"], ["d", "f", "j", "k"])
+            # Teclas das pistas: salvas e lidas; combinação inválida volta ao padrão.
+            save_settings(SETTINGS | {"lane_keys": ["9", "0", "-", "="]}, settings_path)
+            self.assertEqual(load_settings(settings_path)["lane_keys"], ["9", "0", "-", "="])
+            for bad in (["a", "a", "b", "c"], ["a", "b"], "dfjk", ["a", "b", "c", "nao-existe"], None):
+                settings_path.write_text(json.dumps({"lane_keys": bad}))
+                self.assertEqual(load_settings(settings_path)["lane_keys"], ["d", "f", "j", "k"], bad)
             data = json.loads(BEATMAP.read_text(encoding="utf-8"))
             data["audio"] = str(BEATMAP.parent / data["audio"])
             data["offset"] = 0.1

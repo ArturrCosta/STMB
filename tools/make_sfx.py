@@ -176,6 +176,15 @@ def main():
                         tone(196, 0.9, 0.4, "triangle", decay=2.5)))
     save("ambient_day", ambient_day(), peak=0.3)
     save("ambient_night", ambient_night(), peak=0.6)
+    # Armadilha do agiota: estalo metálico das mandíbulas fechando + "clangor" curto.
+    save("trap", mix(lowpass(noise(0.05, 0.9, 70), 6000),
+                     tone(2350, 0.32, 0.30, "square", decay=11),
+                     tone(3120, 0.28, 0.22, "triangle", decay=12),
+                     delay(tone(180, 0.22, 0.45, "sine", decay=7, glide=90), 0.01)))
+    # Tiro do revólver: estouro curto (ruído) + "pancada" grave.
+    save("shot", mix(lowpass(noise(0.22, 1.0, 28), 2600),
+                     tone(95, 0.24, 0.6, "sine", decay=9, glide=45),
+                     lowpass(noise(0.03, 0.8, 120), 9000)))
 
 
 if __name__ == "__main__":
